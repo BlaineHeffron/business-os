@@ -1,0 +1,47 @@
+[workspace]
+members = [
+    "crates/bos-kernel",
+    "crates/bos-contracts",
+    "crates/bos-profile-api",
+    "crates/bos-integrations",
+    "crates/bos-app",
+    "apps/bos-server",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.1"
+
+[workspace.dependencies]
+bos-kernel = { path = "crates/bos-kernel" }
+bos-contracts = { path = "crates/bos-contracts" }
+bos-profile-api = { path = "crates/bos-profile-api" }
+bos-integrations = { path = "crates/bos-integrations" }
+bos-app = { path = "crates/bos-app" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+scraper = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.6", features = ["catch-panic"] }
+regex = "1"
+quick-xml = "0.41"
+phonenumber = "0.3"
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+sha2 = "0.10"
+url = "2"
+toml = "0.8"
+parking_lot = "0.12"
+unicode-normalization = "0.1"

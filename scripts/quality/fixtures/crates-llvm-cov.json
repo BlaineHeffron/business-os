@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "functions": [
+        {
+          "name": "prod_fn",
+          "count": 1,
+          "filenames": ["/repo/crates/bos-app/src/lib.rs"],
+          "regions": [[10, 1, 12, 2, 1, 0, 0, 0]]
+        },
+        {
+          "name": "test_fn",
+          "count": 1,
+          "filenames": ["/repo/crates/bos-app/src/slices/work_queue/tests.rs"],
+          "regions": [[4, 1, 6, 2, 1, 0, 0, 0]]
+        },
+        {
+          "name": "target_fn",
+          "count": 1,
+          "filenames": ["/repo/target/debug/build/out.rs"],
+          "regions": [[8, 1, 9, 2, 1, 0, 0, 0]]
+        },
+        {
+          "name": "server_fn",
+          "count": 0,
+          "filenames": ["/repo/apps/bos-server/src/main.rs"],
+          "regions": [[20, 1, 22, 2, 0, 0, 0, 0]]
+        }
+      ]
+    }
+  ],
+  "type": "llvm.coverage.json.export",
+  "version": "2.0.1"
+}

@@ -1,0 +1,53 @@
+{
+  "name": "/repo/src/cart.rs",
+  "start_line": 1,
+  "end_line": 60,
+  "kind": "unit",
+  "metrics": {
+    "cyclomatic": { "sum": 25.0, "average": 8.333, "min": 1.0, "max": 16.0 }
+  },
+  "spaces": [
+    {
+      "name": "Cart",
+      "start_line": 1,
+      "end_line": 40,
+      "kind": "impl",
+      "metrics": {
+        "cyclomatic": { "sum": 16.0, "average": 8.0, "min": 4.0, "max": 16.0 }
+      },
+      "spaces": [
+        {
+          "name": "checkout",
+          "start_line": 10,
+          "end_line": 20,
+          "kind": "function",
+          "metrics": {
+            "cyclomatic": { "sum": 16.0, "average": 8.0, "min": 4.0, "max": 16.0 }
+          },
+          "spaces": [
+            {
+              "name": "closure",
+              "start_line": 10,
+              "end_line": 12,
+              "kind": "function",
+              "metrics": {
+                "cyclomatic": { "sum": 4.0, "average": 4.0, "min": 4.0, "max": 4.0 }
+              },
+              "spaces": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "helper",
+      "start_line": 50,
+      "end_line": 55,
+      "kind": "function",
+      "metrics": {
+        "cyclomatic": { "sum": 9.0, "average": 9.0, "min": 9.0, "max": 9.0 }
+      },
+      "spaces": []
+    }
+  ]
+}

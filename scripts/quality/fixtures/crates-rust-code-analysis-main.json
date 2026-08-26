@@ -1,0 +1,17 @@
+{
+  "name": "/repo/apps/bos-server/src/main.rs",
+  "start_line": 1,
+  "end_line": 30,
+  "kind": "unit",
+  "metrics": { "cyclomatic": { "sum": 3.0 } },
+  "spaces": [
+    {
+      "name": "server_fn",
+      "start_line": 20,
+      "end_line": 22,
+      "kind": "function",
+      "metrics": { "cyclomatic": { "sum": 3.0 } },
+      "spaces": []
+    }
+  ]
+}

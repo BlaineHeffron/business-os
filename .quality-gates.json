@@ -1,0 +1,46 @@
+{
+  "repo": "BusinessOS frontend",
+  "outputDir": "frontend/coverage/repo-quality",
+  "coverage": {
+    "command": "cd frontend && npx --no-install vitest run --coverage",
+    "format": "istanbul-json",
+    "output": "frontend/coverage/coverage-final.json"
+  },
+  "complexity": {
+    "command": "cd frontend && npx --no-install eslint --config config/quality/eslint.complexity.mjs --format json --output-file {outputDir}/eslint.json src",
+    "format": "eslint-json",
+    "output": "{outputDir}/eslint.json"
+  },
+  "mutation": {
+    "command": "cargo mutants --in-diff {changedDiff} -j 4 --timeout-multiplier 3 --output target/mutants",
+    "format": "cargo-mutants-outcomes",
+    "output": "target/mutants/mutants.out/outcomes.json",
+    "sourceGlobs": [
+      "crates/**/*.rs",
+      "apps/**/*.rs",
+      ":(exclude)**/tests.rs",
+      ":(exclude)**/tests/**"
+    ]
+  },
+  "thresholds": {
+    "crapFail": 30,
+    "mutationScoreMinChanged": 0.8,
+    "survivorsMaxChanged": null
+  },
+  "baseline": "frontend/config/quality/crap-baseline.json",
+  "rust": {
+    "repo": "BusinessOS rust",
+    "outputDir": "target/coverage/repo-quality",
+    "coverage": {
+      "command": "mkdir -p {outputDir} && timeout 1800 cargo llvm-cov --workspace --json --ignore-run-fail --output-path {outputDir}/llvm-cov.json --ignore-filename-regex '(^|/)(tests\\.rs$|tests/)'",
+      "format": "llvm-cov-json",
+      "output": "{outputDir}/llvm-cov.json"
+    },
+    "complexity": {
+      "command": "rust-code-analysis-cli --metrics -O json -l Rust -o {outputDir}/rust-metrics -p crates -p apps --exclude '**/tests.rs' --exclude '**/tests/**'",
+      "format": "rust-code-analysis-json",
+      "output": "{outputDir}/rust-metrics"
+    },
+    "baseline": "scripts/quality/crap-baseline-rust.json"
+  }
+}

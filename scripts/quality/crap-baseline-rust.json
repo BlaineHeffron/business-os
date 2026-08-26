@@ -1,0 +1,8 @@
+{
+  "repo": "BusinessOS rust",
+  "sha": "4e7ffeb748a973b219bd3855bcf4a687e6326270",
+  "generatedAt": "2026-08-22T03:20:23.240Z",
+  "crapFail": 30,
+  "crapAboveFail": 353,
+  "crapSumAboveFail": 37914.08
+}

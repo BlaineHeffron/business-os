@@ -1,0 +1,17 @@
+{
+  "name": "/repo/crates/bos-app/src/lib.rs",
+  "start_line": 1,
+  "end_line": 40,
+  "kind": "unit",
+  "metrics": { "cyclomatic": { "sum": 4.0 } },
+  "spaces": [
+    {
+      "name": "prod_fn",
+      "start_line": 10,
+      "end_line": 12,
+      "kind": "function",
+      "metrics": { "cyclomatic": { "sum": 4.0 } },
+      "spaces": []
+    }
+  ]
+}

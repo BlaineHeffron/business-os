@@ -1,0 +1,66 @@
+# Minimal self-hosted Invoice Ninja v5 for the BusinessOS accounting
+# provider (BOS_ACCOUNTING_PROVIDER=invoice_ninja). Two containers, ~1GB RAM.
+#
+#   1. Set the required shell variables described in README.md.
+#   2. Run `docker compose up -d`.
+#      FIRST BOOT GOTCHA: the app runs as uid 999 (ninja) and a fresh named
+#      storage volume is root-owned — if the app loops on "Permission
+#      denied", run:
+#        docker run --rm -v <volume>:/storage alpine chown -R 999:999 /storage
+#   3. Sign in (IN_USER_EMAIL/IN_PASSWORD), create an API token under
+#      Settings > Account Management > Integrations > API tokens
+#   4. Point BusinessOS: BOS_ACCOUNTING_PROVIDER=invoice_ninja
+#      BOS_INVOICE_NINJA_BASE_URL=http://localhost:8003
+#      BOS_INVOICE_NINJA_API_TOKEN=<token>
+# restart: unless-stopped + an enabled docker daemon = starts on boot.
+
+services:
+  invoiceninja-db:
+    image: mariadb:11
+    container_name: bos-invoiceninja-db
+    environment:
+      MARIADB_DATABASE: ninja
+      MARIADB_USER: ninja
+      MARIADB_PASSWORD: "${INVOICE_NINJA_DB_PASSWORD:?set INVOICE_NINJA_DB_PASSWORD}"
+      MARIADB_ROOT_PASSWORD: "${INVOICE_NINJA_DB_ROOT_PASSWORD:?set INVOICE_NINJA_DB_ROOT_PASSWORD}"
+    volumes:
+      - bos-invoiceninja-db:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  invoiceninja:
+    # Pinned: 5.13.24 moved the app root from /var/www/html to /app.
+    # Bump deliberately: update the tag AND check the storage mount path.
+    image: invoiceninja/invoiceninja-octane:5.13.24
+    container_name: bos-invoiceninja
+    depends_on:
+      invoiceninja-db:
+        condition: service_healthy
+    environment:
+      APP_KEY: "${INVOICE_NINJA_APP_KEY:?set INVOICE_NINJA_APP_KEY}"
+      APP_ENV: "production"
+      APP_URL: "http://localhost:8003"
+      APP_DEBUG: "false"
+      REQUIRE_HTTPS: "false"
+      DB_HOST: invoiceninja-db
+      DB_DATABASE: ninja
+      DB_USERNAME: ninja
+      DB_PASSWORD: "${INVOICE_NINJA_DB_PASSWORD:?set INVOICE_NINJA_DB_PASSWORD}"
+      IN_USER_EMAIL: "${INVOICE_NINJA_USER_EMAIL:?set INVOICE_NINJA_USER_EMAIL}"
+      IN_PASSWORD: "${INVOICE_NINJA_USER_PASSWORD:?set INVOICE_NINJA_USER_PASSWORD}"
+      CACHE_DRIVER: file
+      QUEUE_CONNECTION: database
+    ports:
+      - "8003:8000"
+    volumes:
+      - bos-invoiceninja-storage:/app/storage
+    restart: unless-stopped
+
+volumes:
+  bos-invoiceninja-db:
+  bos-invoiceninja-storage:

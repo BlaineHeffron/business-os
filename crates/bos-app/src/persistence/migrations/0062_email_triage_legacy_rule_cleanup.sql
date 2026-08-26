@@ -1,0 +1,3 @@
+-- Marker migration for the receipted email triage legacy rule cleanup.
+-- The JSON rewrite runs immediately after migrations through store_core::mutate
+-- so it can reuse legacy.rs mapping and emit one receipt per changed rule.

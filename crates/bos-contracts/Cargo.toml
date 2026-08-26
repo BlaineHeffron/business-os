@@ -1,0 +1,14 @@
+[package]
+name = "bos-contracts"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+ts-rs = { version = "12", optional = true, features = ["serde-compat"] }
+
+[features]
+ts = ["dep:ts-rs"]

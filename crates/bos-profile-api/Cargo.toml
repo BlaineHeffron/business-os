@@ -1,0 +1,10 @@
+[package]
+name = "bos-profile-api"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bos-contracts = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

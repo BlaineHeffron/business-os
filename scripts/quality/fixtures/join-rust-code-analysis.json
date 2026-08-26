@@ -1,0 +1,42 @@
+{
+  "name": "/repo/src/nested.rs",
+  "start_line": 1,
+  "end_line": 60,
+  "kind": "unit",
+  "metrics": {
+    "cyclomatic": { "sum": 25.0 }
+  },
+  "spaces": [
+    {
+      "name": "parent",
+      "start_line": 10,
+      "end_line": 20,
+      "kind": "function",
+      "metrics": {
+        "cyclomatic": { "sum": 16.0 }
+      },
+      "spaces": [
+        {
+          "name": "closure",
+          "start_line": 14,
+          "end_line": 16,
+          "kind": "function",
+          "metrics": {
+            "cyclomatic": { "sum": 4.0 }
+          },
+          "spaces": []
+        }
+      ]
+    },
+    {
+      "name": "rustOnly",
+      "start_line": 50,
+      "end_line": 55,
+      "kind": "function",
+      "metrics": {
+        "cyclomatic": { "sum": 9.0 }
+      },
+      "spaces": []
+    }
+  ]
+}

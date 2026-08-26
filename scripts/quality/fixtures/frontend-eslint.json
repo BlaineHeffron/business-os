@@ -1,0 +1,13 @@
+[
+  {
+    "filePath": "/repo/frontend/src/app.ts",
+    "messages": [
+      {
+        "ruleId": "complexity",
+        "message": "Function 'render' has a complexity of 2.",
+        "line": 1,
+        "column": 1
+      }
+    ]
+  }
+]
