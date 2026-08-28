@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       GHCR_IMAGE_REPO: ghcr.io/blaineheffron/business-os
