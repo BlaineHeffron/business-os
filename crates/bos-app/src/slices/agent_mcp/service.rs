@@ -6,6 +6,7 @@ use bos_integrations::gmail_inbox_read::{
     GmailFullMessage, LiveGmailInboxReadClient, ReqwestGmailHttpClient,
 };
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::http::{now_ms, AppState, AuthContext, OperatorScope};
@@ -442,19 +443,28 @@ fn email_thread_read(
 ) -> Result<Value, ToolError> {
     require_slice(state, crate::slices::email_triage::SLICE.id)?;
     let source_ref = required_string(args, "source_ref")?;
+    let result = read_email_thread_result(state, scope, &source_ref)?;
+    Ok(tool_result("Current Gmail thread fetched.", result))
+}
+
+fn read_email_thread_result(
+    state: &AppState,
+    scope: &OperatorScope,
+    source_ref: &str,
+) -> Result<Value, ToolError> {
     let (source, oauth) = {
         let persistence = state.persistence.lock();
         let mut sources = crate::slices::email_triage::store::inbound_by_source_keys(
             persistence.connection_ref(),
             &state.client_id,
-            &[source_ref.clone()],
+            &[source_ref.to_string()],
             scope,
         )
         .map_err(store_tool_error)?;
         let source = sources
             .pop()
             .ok_or_else(|| ToolError::new("email_source_not_found", "email source not found"))?;
-        let oauth = crate::slices::google_connector::service::resolve_google_oauth(
+        let oauth = resolve_email_thread_oauth(
             persistence.connection_ref(),
             &state.client_id,
             source.source_user_id.as_deref(),
@@ -482,14 +492,50 @@ fn email_thread_read(
     let messages = client
         .read_thread_messages(thread_id)
         .map_err(|err| ToolError::new("gmail_thread_read_failed", err.to_string()))?;
-    let result = email_thread_result(&source, messages);
-    Ok(tool_result("Current Gmail thread fetched.", result))
+    Ok(email_thread_result(&source, messages))
+}
+
+fn resolve_email_thread_oauth(
+    conn: &rusqlite::Connection,
+    client_id: &str,
+    source_user_id: Option<&str>,
+) -> Result<Option<bos_integrations::GoogleOAuthConfig>, StoreError> {
+    match source_user_id {
+        Some(user_id) => crate::slices::google_connector::service::resolve_bound_google_oauth(
+            conn, client_id, user_id,
+        ),
+        None => {
+            crate::slices::google_connector::service::resolve_google_oauth(conn, client_id, None)
+        }
+    }
 }
 
 fn email_thread_result(
     source: &bos_contracts::email_triage::InboundMessageRecord,
     mut messages: Vec<GmailFullMessage>,
 ) -> Value {
+    if !messages
+        .iter()
+        .any(|message| message.message_id == source.message_id)
+    {
+        messages.push(GmailFullMessage {
+            message_id: source.message_id.clone(),
+            thread_id: source.thread_id.clone(),
+            label_ids: source.labels.clone(),
+            internal_date_epoch_ms: source.internal_date_ms,
+            subject: source.subject.clone(),
+            from: source.from_addr.clone(),
+            to: source.to_addr.clone(),
+            headers: Vec::new(),
+            plain_text_body: if source.body_full.trim().is_empty() {
+                source.body_excerpt.clone()
+            } else {
+                source.body_full.clone()
+            },
+            html_body: None,
+            attachments: Vec::new(),
+        });
+    }
     messages.sort_by(|a, b| {
         a.internal_date_epoch_ms
             .unwrap_or(0)
@@ -501,25 +547,49 @@ fn email_thread_result(
         .find(|message| message.message_id == source.message_id)
         .and_then(|message| message.internal_date_epoch_ms)
         .or(source.internal_date_ms);
-    let sent_after_source = source_at.map(|source_at| {
-        messages.iter().any(|message| {
-            message
-                .label_ids
-                .iter()
-                .any(|label| label.eq_ignore_ascii_case("SENT"))
-                && message
-                    .internal_date_epoch_ms
-                    .is_some_and(|at| at > source_at)
-        })
+    let sent_after_source_index = source_at.and_then(|source_at| {
+        messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, message)| {
+                (message
+                    .label_ids
+                    .iter()
+                    .any(|label| label.eq_ignore_ascii_case("SENT"))
+                    && message
+                        .internal_date_epoch_ms
+                        .is_some_and(|at| at > source_at))
+                .then_some(idx)
+            })
     });
+    let sent_after_source = source_at.map(|_| sent_after_source_index.is_some());
+    let sent_after_source_message_id = sent_after_source_index
+        .and_then(|idx| messages.get(idx))
+        .map(|message| message.message_id.clone());
+    let total_message_count = messages.len();
+    let mut selected_indexes = BTreeSet::new();
+    if let Some(source_index) = messages
+        .iter()
+        .position(|message| message.message_id == source.message_id)
+    {
+        selected_indexes.insert(source_index);
+    }
+    if let Some(sent_index) = sent_after_source_index {
+        selected_indexes.insert(sent_index);
+    }
+    for idx in (0..messages.len()).rev() {
+        if selected_indexes.len() >= 20 {
+            break;
+        }
+        selected_indexes.insert(idx);
+    }
+    let messages_truncated = selected_indexes.len() < total_message_count;
     let thread_messages = messages
         .into_iter()
-        .rev()
-        .take(20)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|message| {
+        .enumerate()
+        .filter(|(idx, _)| selected_indexes.contains(idx))
+        .map(|(_, message)| {
             let body = if message.plain_text_body.trim().is_empty() {
                 bos_integrations::web_page_read::strip_to_text(
                     message.html_body.as_deref().unwrap_or(""),
@@ -544,6 +614,9 @@ fn email_thread_result(
         "source_message_id": source.message_id,
         "thread_id": source.thread_id,
         "sent_after_source": sent_after_source,
+        "sent_after_source_message_id": sent_after_source_message_id,
+        "total_message_count": total_message_count,
+        "messages_truncated": messages_truncated,
         "guidance": match sent_after_source {
             Some(true) => "A sent message follows the source email. Review it before creating any action or draft. Usually, do not create another reply draft.",
             Some(false) => "No sent message follows the source email. Decide from the complete thread whether action is still required.",
@@ -661,6 +734,122 @@ mod email_thread_tests {
         assert_eq!(
             result["messages"][0]["subject"],
             json!("access_token=[REDACTED:credential_assignment]")
+        );
+    }
+
+    #[test]
+    fn thread_result_keeps_source_and_latest_sent_message_when_truncated() {
+        let mut messages = vec![
+            message("inbound-1", 1_000, &["INBOX"], "Original request"),
+            message("sent-1", 2_000, &["SENT"], "Handled response"),
+        ];
+        for index in 0..23 {
+            messages.push(message(
+                &format!("later-{index}"),
+                3_000 + index,
+                &["INBOX"],
+                "Later message",
+            ));
+        }
+
+        let result = email_thread_result(&source(), messages);
+        let ids = result["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|entry| entry["message_id"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(result["total_message_count"], json!(25));
+        assert_eq!(result["messages_truncated"], json!(true));
+        assert_eq!(result["sent_after_source_message_id"], json!("sent-1"));
+        assert_eq!(ids.len(), 20);
+        assert!(ids.contains(&"inbound-1"));
+        assert!(ids.contains(&"sent-1"));
+    }
+
+    #[test]
+    fn thread_result_does_not_treat_equal_timestamp_as_a_reply() {
+        let result = email_thread_result(
+            &source(),
+            vec![
+                message("inbound-1", 1_000, &["INBOX"], "Original request"),
+                message("sent-1", 1_000, &["SENT"], "Same timestamp"),
+            ],
+        );
+
+        assert_eq!(result["sent_after_source"], json!(false));
+        assert_eq!(result["sent_after_source_message_id"], Value::Null);
+    }
+
+    #[test]
+    fn thread_result_reports_an_unknown_source_time() {
+        let mut unknown_source = source();
+        unknown_source.internal_date_ms = None;
+        let result = email_thread_result(
+            &unknown_source,
+            vec![message("sent-1", 2_000, &["SENT"], "Possible response")],
+        );
+
+        assert_eq!(result["sent_after_source"], Value::Null);
+        assert!(require_unanswered_email_thread(&result).is_err());
+    }
+
+    #[test]
+    fn draft_guard_allows_only_a_conclusively_unanswered_thread() {
+        assert!(requires_email_thread_check("email", "email_draft_reply"));
+        assert!(requires_email_thread_check("email", "follow_up_task"));
+        assert!(!requires_email_thread_check("email", "crm_activity"));
+        assert!(!requires_email_thread_check(
+            "operator_note",
+            "follow_up_task"
+        ));
+        assert!(require_unanswered_email_thread(&json!({
+            "sent_after_source": false
+        }))
+        .is_ok());
+        assert_eq!(
+            require_unanswered_email_thread(&json!({ "sent_after_source": true }))
+                .expect_err("sent response must block")
+                .code,
+            "email_thread_already_replied"
+        );
+    }
+
+    #[test]
+    fn source_bound_thread_read_never_borrows_another_users_credential() {
+        let _env = crate::http::test_support::EnvGuard::set_many(&[
+            ("BOS_GMAIL_OAUTH_CLIENT_ID", "test-client-id"),
+            ("BOS_GMAIL_OAUTH_CLIENT_SECRET", "test-client-secret"),
+            ("BOS_GMAIL_OAUTH_REFRESH_TOKEN", ""),
+        ]);
+        let state = crate::http::test_support::test_state();
+        {
+            let mut persistence = state.persistence.lock();
+            crate::slices::google_connector::store::store_credential(
+                persistence.connection(),
+                &state.client_id,
+                "user_casey",
+                crate::slices::google_connector::SERVICE_GMAIL,
+                "casey-refresh-token",
+                &[crate::slices::google_connector::service::GMAIL_READONLY_SCOPE.to_string()],
+                1_000,
+            )
+            .expect("store credential");
+        }
+        let persistence = state.persistence.lock();
+
+        assert!(resolve_email_thread_oauth(
+            persistence.connection_ref(),
+            &state.client_id,
+            Some("user_jordan"),
+        )
+        .expect("resolve bound credential")
+        .is_none());
+        assert!(
+            resolve_email_thread_oauth(persistence.connection_ref(), &state.client_id, None,)
+                .expect("resolve legacy credential")
+                .is_some()
         );
     }
 }
@@ -1032,7 +1221,7 @@ fn stage_draft(state: AppState, auth: AuthContext, args: &Value) -> Result<Value
     let owning_slice = crate::slices::work_queue::packet_kind_slice(&kind)
         .ok_or_else(|| ToolError::new("produce_kind_unsupported", "unknown packet kind"))?;
     require_slice(&state, owning_slice)?;
-    {
+    let item = {
         let persistence = state.persistence.lock();
         let item = crate::slices::work_queue::store::get_item_scoped(
             persistence.connection_ref(),
@@ -1045,6 +1234,11 @@ fn stage_draft(state: AppState, auth: AuthContext, args: &Value) -> Result<Value
         .item;
         crate::produce::validate_item_for_kind(&item, &kind)
             .map_err(|code| ToolError::new(code, code))?;
+        item
+    };
+    if requires_email_thread_check(&item.source_kind, &kind) {
+        let thread = read_email_thread_result(&state, &auth.scope, &item.source_ref)?;
+        require_unanswered_email_thread(&thread)?;
     }
     crate::produce::kick_produce_for_kind(
         state,
@@ -1065,6 +1259,25 @@ fn stage_draft(state: AppState, auth: AuthContext, args: &Value) -> Result<Value
             "provider_write": "not_performed",
         }),
     ))
+}
+
+fn requires_email_thread_check(source_kind: &str, packet_kind: &str) -> bool {
+    source_kind == crate::slices::work_queue::SOURCE_KIND_EMAIL
+        && matches!(packet_kind, "email_draft_reply" | "follow_up_task")
+}
+
+fn require_unanswered_email_thread(thread: &Value) -> Result<(), ToolError> {
+    match thread.get("sent_after_source").and_then(Value::as_bool) {
+        Some(false) => Ok(()),
+        Some(true) => Err(ToolError::new(
+            "email_thread_already_replied",
+            "a sent message follows the source email; review the sent response instead of creating another draft",
+        )),
+        None => Err(ToolError::new(
+            "email_thread_check_inconclusive",
+            "the source email time is unavailable; draft production requires a conclusive thread check",
+        )),
+    }
 }
 
 fn mcp_actor(auth: &AuthContext) -> String {
