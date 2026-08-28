@@ -10,6 +10,7 @@ WORKDIR /source
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY apps apps
+COPY data data
 COPY --from=frontend /source/frontend/dist frontend/dist
 RUN cargo build --locked --release -p bos-server
 
