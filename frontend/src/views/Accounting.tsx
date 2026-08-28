@@ -140,6 +140,43 @@ export function AccountingReconnectNotice({
   );
 }
 
+export function accountingSyncButtonLabel(
+  reconnectRequired: boolean,
+  syncBusy: boolean,
+  syncing: boolean,
+): string {
+  if (reconnectRequired) return "Reconnect required";
+  if (syncBusy) return "Syncing…";
+  if (syncing) return "Updating…";
+  return "Refresh";
+}
+
+export function AccountingRefreshMessages({
+  notice,
+  lastError,
+  reconnectRequired,
+}: {
+  notice: string | null;
+  lastError: string | null | undefined;
+  reconnectRequired: boolean;
+}) {
+  return (
+    <>
+      {notice ? (
+        <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-300">
+          {notice}
+        </div>
+      ) : null}
+      {lastError && !reconnectRequired ? (
+        <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+          The last accounting refresh hit a problem; numbers may be behind.
+          Try Refresh in a couple of minutes.
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function outboxLabel(run: CustomerTierSyncRun): string | null {
   if (run.status === "staged") return null;
   const job = run.outbox_job;
@@ -596,32 +633,17 @@ export default function Accounting({
             disabled={syncBusy || syncing || reconnectRequired}
             onClick={() => void syncNow()}
           >
-            {reconnectRequired
-              ? "Reconnect required"
-              : syncBusy
-                ? "Syncing…"
-                : syncing
-                  ? "Updating…"
-                  : "Refresh"}
+            {accountingSyncButtonLabel(reconnectRequired, syncBusy, syncing)}
           </Button>
         </div>
       </div>
 
-      {reconnectRequired ? (
-        <AccountingReconnectNotice status={status!} />
-      ) : null}
-
-      {notice ? (
-        <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-300">
-          {notice}
-        </div>
-      ) : null}
-      {sync?.last_error && !reconnectRequired ? (
-        <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-          The last accounting refresh hit a problem; numbers may be behind.
-          Try Refresh in a couple of minutes.
-        </div>
-      ) : null}
+      <AccountingReconnectNotice status={status!} />
+      <AccountingRefreshMessages
+        notice={notice}
+        lastError={sync?.last_error}
+        reconnectRequired={reconnectRequired}
+      />
 
       <div
         className={`grid grid-cols-2 gap-4 ${
