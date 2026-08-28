@@ -1,0 +1,81 @@
+# Publishes the generic BusinessOS deploy image on every merge to main.
+#
+# The image is client-agnostic. GHCR is the primary registry for non-Fly
+# deployments. The Fly registry mirror remains for Fly-hosted clients.
+# Client deploys live in bos-clients and pin an immutable sha tag.
+name: Publish deploy image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GHCR_IMAGE_REPO: ghcr.io/blaineheffron/business-os
+      FLY_IMAGE_REPO: registry.fly.io/businessos-images
+      FLYCTL_VERSION: 0.4.95
+      FLYCTL_LINUX_X86_64_SHA256: 580cbc80b2ce9f28350fd9a1638b44db0e9919338e179b263209035299c0a0e0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Authenticate Docker to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install flyctl
+        run: |
+          archive="${RUNNER_TEMP}/flyctl.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "${archive}" \
+            "https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+          echo "${FLYCTL_LINUX_X86_64_SHA256}  ${archive}" | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}" flyctl
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Build image
+        run: |
+          SHORT_SHA="${GITHUB_SHA::12}"
+          docker build \
+            --build-arg "BOS_BUILD_SHA=${GITHUB_SHA}" \
+            -t "${GHCR_IMAGE_REPO}:sha-${SHORT_SHA}" \
+            -t "${GHCR_IMAGE_REPO}:main" \
+            .
+
+      - name: Push image to GHCR
+        run: |
+          SHORT_SHA="${GITHUB_SHA::12}"
+          docker push "${GHCR_IMAGE_REPO}:sha-${SHORT_SHA}"
+          docker push "${GHCR_IMAGE_REPO}:main"
+          echo "::notice::Published ${GHCR_IMAGE_REPO}:sha-${SHORT_SHA}"
+
+      - name: Mirror image to Fly registry
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "${FLY_API_TOKEN}" ]; then
+            echo "::notice::FLY_API_TOKEN is unset; GHCR publish completed and the optional Fly mirror was skipped."
+            exit 0
+          fi
+          flyctl auth docker
+          SHORT_SHA="${GITHUB_SHA::12}"
+          docker tag "${GHCR_IMAGE_REPO}:sha-${SHORT_SHA}" "${FLY_IMAGE_REPO}:sha-${SHORT_SHA}"
+          docker tag "${GHCR_IMAGE_REPO}:main" "${FLY_IMAGE_REPO}:main"
+          docker push "${FLY_IMAGE_REPO}:sha-${SHORT_SHA}"
+          docker push "${FLY_IMAGE_REPO}:main"
+          echo "::notice::Mirrored ${FLY_IMAGE_REPO}:sha-${SHORT_SHA}"

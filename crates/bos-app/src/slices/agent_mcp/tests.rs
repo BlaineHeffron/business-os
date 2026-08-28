@@ -22,6 +22,18 @@ fn shared_auth() -> AuthContext {
     }
 }
 
+fn user_auth(user_id: &str) -> AuthContext {
+    let identity = OperatorIdentity {
+        actor_id: user_id.to_string(),
+        display_name: user_id.to_string(),
+    };
+    AuthContext {
+        scope: identity.scope(),
+        actor_id: identity.actor_id.clone(),
+        identity,
+    }
+}
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response
         .into_body()
@@ -331,6 +343,59 @@ fn agent_result_ingest_creates_one_note_and_queue_artifact_idempotently() {
     .expect("note")
     .expect("note exists");
     assert_eq!(note.created_by, "mcp:operator");
+}
+
+#[test]
+fn email_thread_tool_enforces_operator_scope_before_gmail_access() {
+    let _env = EnvGuard::unset("BOS_GMAIL_OAUTH_REFRESH_TOKEN");
+    let state = test_state_configured(None, &["email_triage"]);
+    let message = bos_contracts::email_triage::InboundMessageRecord {
+        source_key: "source-jordan".to_string(),
+        message_id: "message-jordan".to_string(),
+        thread_id: Some("thread-jordan".to_string()),
+        internal_date_ms: Some(1_000),
+        from_addr: Some("customer@example.test".to_string()),
+        to_addr: Some("jordan@example.test".to_string()),
+        subject: Some("Question".to_string()),
+        body_excerpt: "Please help.".to_string(),
+        body_full: "Please help.".to_string(),
+        headers: Vec::new(),
+        labels: vec!["INBOX".to_string()],
+        resolved_category: "inbound_email".to_string(),
+        matched_rule_id: None,
+        ingested_at_ms: 1_000,
+        ai_triage_status: None,
+        ai_triage_rationale: None,
+        attachments: Vec::new(),
+        source_user_id: Some("user_jordan".to_string()),
+    };
+    {
+        let mut persistence = state.persistence.lock();
+        crate::slices::email_triage::store::record_inbound_message(
+            persistence.connection(),
+            &state.client_id,
+            &message,
+        )
+        .expect("store inbound message");
+    }
+
+    let hidden = super::service::test_call_tool(
+        state.clone(),
+        user_auth("user_casey"),
+        "bos_email_thread_read",
+        json!({ "source_ref": "source-jordan" }),
+    )
+    .expect_err("another user's source must stay hidden");
+    assert_eq!(hidden, "email_source_not_found");
+
+    let visible = super::service::test_call_tool(
+        state,
+        user_auth("user_jordan"),
+        "bos_email_thread_read",
+        json!({ "source_ref": "source-jordan" }),
+    )
+    .expect_err("missing credential must fail before Gmail access");
+    assert_eq!(visible, "gmail_credential_missing");
 }
 
 #[test]
