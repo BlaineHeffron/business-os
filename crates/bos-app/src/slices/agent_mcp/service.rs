@@ -521,9 +521,12 @@ fn email_thread_result(
         .rev()
         .map(|message| {
             let body = if message.plain_text_body.trim().is_empty() {
-                message.html_body.as_deref().unwrap_or("")
+                bos_integrations::web_page_read::strip_to_text(
+                    message.html_body.as_deref().unwrap_or(""),
+                    12_000,
+                )
             } else {
-                &message.plain_text_body
+                message.plain_text_body.clone()
             };
             json!({
                 "message_id": message.message_id,
@@ -532,11 +535,11 @@ fn email_thread_result(
                 "to": message.to,
                 "subject": message.subject,
                 "label_ids": message.label_ids,
-                "body_excerpt": body.chars().take(4_000).collect::<String>(),
+                "body_excerpt": crate::slices::email_triage::service::body_for_agent_context(&body, 4_000),
             })
         })
         .collect::<Vec<_>>();
-    json!({
+    let mut result = json!({
         "source_ref": source.source_key,
         "source_message_id": source.message_id,
         "thread_id": source.thread_id,
@@ -547,7 +550,9 @@ fn email_thread_result(
             None => "The source email time is unavailable. Review the complete thread before creating any action or draft.",
         },
         "messages": thread_messages,
-    })
+    });
+    bos_integrations::llm_typed_tasks::scrub_json_in_place(&mut result);
+    result
 }
 
 #[cfg(test)]
@@ -622,6 +627,41 @@ mod email_thread_tests {
         );
 
         assert_eq!(result["sent_after_source"], json!(false));
+    }
+
+    #[test]
+    fn thread_result_projects_agent_safe_message_bodies() {
+        let result = email_thread_result(
+            &source(),
+            vec![message(
+                "inbound-1",
+                1_000,
+                &["INBOX"],
+                "Please confirm the order. api_key=secret-value-123\n\nThanks,\nCustomer\n\nOn Tue, Owner wrote:\n> Earlier private history",
+            )],
+        );
+        let body = result["messages"][0]["body_excerpt"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert_eq!(
+            body,
+            "Please confirm the order. api_key=[REDACTED:credential_assignment]"
+        );
+        assert!(!body.contains("Earlier private history"));
+        assert!(!body.contains("secret-value-123"));
+    }
+
+    #[test]
+    fn thread_result_scrubs_credentials_from_message_headers() {
+        let mut unsafe_message = message("inbound-1", 1_000, &["INBOX"], "Please help.");
+        unsafe_message.subject = Some("access_token=secret-value-123".to_string());
+        let result = email_thread_result(&source(), vec![unsafe_message]);
+
+        assert_eq!(
+            result["messages"][0]["subject"],
+            json!("access_token=[REDACTED:credential_assignment]")
+        );
     }
 }
 

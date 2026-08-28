@@ -2073,6 +2073,51 @@ pub fn strip_forwarded_and_quoted(body: &str) -> String {
     collapse_gmail_forward_preamble(&without_quote)
 }
 
+/// Project an email body for agent context without changing the stored source.
+/// Removes repeated thread history and a conservative trailing signature, then
+/// applies the shared credential scrub used at typed LLM input boundaries.
+pub fn body_for_agent_context(body: &str, max_chars: usize) -> String {
+    let without_history = strip_forwarded_and_quoted(body);
+    let without_signature = strip_trailing_signature(&without_history);
+    let (scrubbed, _) = bos_integrations::llm_typed_tasks::scrub_llm_input(&without_signature);
+    scrubbed.chars().take(max_chars).collect()
+}
+
+fn strip_trailing_signature(body: &str) -> String {
+    let lines = body.lines().collect::<Vec<_>>();
+    let signature_at = lines.iter().enumerate().find_map(|(idx, line)| {
+        if idx == 0 {
+            return None;
+        }
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let explicit_separator =
+            matches!(trimmed, "--" | "—") || lower.starts_with("sent from my ");
+        let trailing_signoff = lines.len().saturating_sub(idx) <= 6
+            && matches!(
+                lower.as_str(),
+                "best,"
+                    | "best regards,"
+                    | "cheers,"
+                    | "kind regards,"
+                    | "regards,"
+                    | "sincerely,"
+                    | "thank you,"
+                    | "thanks,"
+            );
+        (explicit_separator || trailing_signoff).then_some(idx)
+    });
+    let projected = signature_at
+        .map(|idx| lines[..idx].join("\n"))
+        .unwrap_or_else(|| body.to_string());
+    let projected = projected.trim();
+    if projected.is_empty() {
+        body.trim().to_string()
+    } else {
+        projected.to_string()
+    }
+}
+
 fn strip_trailing_quote_chain(body: &str) -> String {
     let lines: Vec<&str> = body.lines().collect();
     let mut cut_at = None;
