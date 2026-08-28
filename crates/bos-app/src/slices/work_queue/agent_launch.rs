@@ -225,6 +225,17 @@ pub fn build_prompt(
                 message_id = message.source_key,
             ));
         }
+        if item.source_kind == "email" {
+            prompt.push_str(
+                "\n--- Required email thread check ---\n\
+                 Before you create an action, task, or email draft, inspect the current Gmail thread. \
+                 Use bos_email_thread_read with the source_ref when the BusinessOS MCP server is available. \
+                 Otherwise, inspect the full thread with an available read-only Gmail tool. \
+                 If a sent message follows the source email, determine whether it already resolves the request. \
+                 Usually, do not create another reply draft after a response was sent. \
+                 Do not assume the inbox message is still unanswered when you cannot verify the thread.\n",
+            );
+        }
     }
 
     let notes = operator_context.trim();
@@ -459,6 +470,9 @@ mod tests {
         assert!(prompt.contains("--- Source attachments ---"));
         assert!(prompt.contains("spec.pdf (application/pdf, 1234 bytes; attachment_id=att-1)"));
         assert!(prompt.contains("/api/email-triage/inbox/m1/attachments/<attachment_id>/evidence"));
+        assert!(prompt.contains("--- Required email thread check ---"));
+        assert!(prompt.contains("bos_email_thread_read"));
+        assert!(prompt.contains("Usually, do not create another reply draft"));
     }
 
     #[test]

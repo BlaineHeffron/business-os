@@ -34,7 +34,19 @@ async fn mcp_post(
     if let Some(error) = service::validate_http_request(&headers, &message) {
         return (StatusCode::BAD_REQUEST, Json(error)).into_response();
     }
-    let mut response = match service::handle_request(state, auth, message) {
+    let handled =
+        match tokio::task::spawn_blocking(move || service::handle_request(state, auth, message))
+            .await
+        {
+            Ok(handled) => handled,
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "agent_mcp_tool_join_failed",
+                )
+            }
+        };
+    let mut response = match handled {
         service::McpHttpResponse::Json(value) => Json(value).into_response(),
         service::McpHttpResponse::Accepted => StatusCode::ACCEPTED.into_response(),
     };

@@ -2,7 +2,11 @@ use axum::http::HeaderMap;
 use bos_contracts::follow_up_tasks::{TaskStatus, TasksResponse};
 use bos_contracts::operator_notes::{OperatorNote, OperatorNoteCreateResponse};
 use bos_contracts::work_queue::{WorkItemStatus, WorkQueueResponse};
+use bos_integrations::gmail_inbox_read::{
+    GmailFullMessage, LiveGmailInboxReadClient, ReqwestGmailHttpClient,
+};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::http::{now_ms, AppState, AuthContext, OperatorScope};
 use crate::store_core::StoreError;
@@ -272,8 +276,20 @@ fn tools_for_state(state: &AppState) -> Vec<Value> {
             }),
         ),
         tool(
+            "bos_email_thread_read",
+            "Read the current Gmail thread for a visible source email. Check sent_after_source before creating email or follow-up work.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "source_ref": { "type": "string", "description": "The email source_ref from a work item or follow-up task." }
+                },
+                "required": ["source_ref"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
             "bos_follow_ups_list",
-            "List local tasks and outbound email follow-up workflows visible to the authenticated operator.",
+            "List local tasks and outbound email follow-up workflows. Read the current email thread before acting on an email-based task.",
             json!({
                 "type": "object",
                 "properties": {
@@ -317,7 +333,7 @@ fn tools_for_state(state: &AppState) -> Vec<Value> {
         ),
         tool(
             "bos_stage_draft",
-            "Kick draft production for an accepted work item and packet kind. This stages a draft only; approval and outbox gates remain separate.",
+            "Kick draft production for an accepted work item and packet kind. For email replies or follow-ups, first read the current email thread.",
             json!({
                 "type": "object",
                 "properties": {
@@ -402,6 +418,7 @@ fn call_tool(state: AppState, auth: AuthContext, params: Value) -> Result<Value,
     match name {
         "bos_work_queue_list" => work_queue_list(&state, &auth.scope, &args),
         "bos_work_item_source" => work_item_source(&state, &auth.scope, &args),
+        "bos_email_thread_read" => email_thread_read(&state, &auth.scope, &args),
         "bos_follow_ups_list" => follow_ups_list(&state, &auth.scope, &args),
         "bos_operator_note_create" => operator_note_create(state, auth, &args),
         "bos_agent_result_ingest" => agent_result_ingest(state, auth, &args),
@@ -415,6 +432,196 @@ fn call_tool(state: AppState, auth: AuthContext, params: Value) -> Result<Value,
             "mcp_tool_unsupported",
             format!("unsupported BusinessOS MCP tool {name}"),
         )),
+    }
+}
+
+fn email_thread_read(
+    state: &AppState,
+    scope: &OperatorScope,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    require_slice(state, crate::slices::email_triage::SLICE.id)?;
+    let source_ref = required_string(args, "source_ref")?;
+    let (source, oauth) = {
+        let persistence = state.persistence.lock();
+        let mut sources = crate::slices::email_triage::store::inbound_by_source_keys(
+            persistence.connection_ref(),
+            &state.client_id,
+            &[source_ref.clone()],
+            scope,
+        )
+        .map_err(store_tool_error)?;
+        let source = sources
+            .pop()
+            .ok_or_else(|| ToolError::new("email_source_not_found", "email source not found"))?;
+        let oauth = crate::slices::google_connector::service::resolve_google_oauth(
+            persistence.connection_ref(),
+            &state.client_id,
+            source.source_user_id.as_deref(),
+        )
+        .map_err(store_tool_error)?
+        .ok_or_else(|| {
+            ToolError::new(
+                "gmail_credential_missing",
+                "a Gmail credential is required to read the current thread",
+            )
+        })?;
+        (source, oauth)
+    };
+    let thread_id = source.thread_id.as_deref().ok_or_else(|| {
+        ToolError::new(
+            "email_thread_missing",
+            "the source email has no Gmail thread id",
+        )
+    })?;
+    let client = LiveGmailInboxReadClient::from_credentials(
+        Arc::new(ReqwestGmailHttpClient::default()),
+        &oauth,
+    )
+    .map_err(|err| ToolError::new("gmail_thread_read_failed", err.to_string()))?;
+    let messages = client
+        .read_thread_messages(thread_id)
+        .map_err(|err| ToolError::new("gmail_thread_read_failed", err.to_string()))?;
+    let result = email_thread_result(&source, messages);
+    Ok(tool_result("Current Gmail thread fetched.", result))
+}
+
+fn email_thread_result(
+    source: &bos_contracts::email_triage::InboundMessageRecord,
+    mut messages: Vec<GmailFullMessage>,
+) -> Value {
+    messages.sort_by(|a, b| {
+        a.internal_date_epoch_ms
+            .unwrap_or(0)
+            .cmp(&b.internal_date_epoch_ms.unwrap_or(0))
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+    let source_at = messages
+        .iter()
+        .find(|message| message.message_id == source.message_id)
+        .and_then(|message| message.internal_date_epoch_ms)
+        .or(source.internal_date_ms);
+    let sent_after_source = source_at.map(|source_at| {
+        messages.iter().any(|message| {
+            message
+                .label_ids
+                .iter()
+                .any(|label| label.eq_ignore_ascii_case("SENT"))
+                && message
+                    .internal_date_epoch_ms
+                    .is_some_and(|at| at > source_at)
+        })
+    });
+    let thread_messages = messages
+        .into_iter()
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|message| {
+            let body = if message.plain_text_body.trim().is_empty() {
+                message.html_body.as_deref().unwrap_or("")
+            } else {
+                &message.plain_text_body
+            };
+            json!({
+                "message_id": message.message_id,
+                "internal_date_ms": message.internal_date_epoch_ms,
+                "from": message.from,
+                "to": message.to,
+                "subject": message.subject,
+                "label_ids": message.label_ids,
+                "body_excerpt": body.chars().take(4_000).collect::<String>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "source_ref": source.source_key,
+        "source_message_id": source.message_id,
+        "thread_id": source.thread_id,
+        "sent_after_source": sent_after_source,
+        "guidance": match sent_after_source {
+            Some(true) => "A sent message follows the source email. Review it before creating any action or draft. Usually, do not create another reply draft.",
+            Some(false) => "No sent message follows the source email. Decide from the complete thread whether action is still required.",
+            None => "The source email time is unavailable. Review the complete thread before creating any action or draft.",
+        },
+        "messages": thread_messages,
+    })
+}
+
+#[cfg(test)]
+mod email_thread_tests {
+    use super::*;
+    use bos_contracts::email_triage::InboundMessageRecord;
+
+    fn source() -> InboundMessageRecord {
+        InboundMessageRecord {
+            source_key: "source-1".to_string(),
+            message_id: "inbound-1".to_string(),
+            thread_id: Some("thread-1".to_string()),
+            internal_date_ms: Some(1_000),
+            from_addr: Some("customer@example.test".to_string()),
+            to_addr: Some("owner@example.test".to_string()),
+            subject: Some("Question".to_string()),
+            body_excerpt: "Can you help?".to_string(),
+            body_full: "Can you help?".to_string(),
+            headers: Vec::new(),
+            labels: vec!["INBOX".to_string()],
+            resolved_category: "inbound_email".to_string(),
+            matched_rule_id: None,
+            ingested_at_ms: 1_000,
+            ai_triage_status: None,
+            ai_triage_rationale: None,
+            attachments: Vec::new(),
+            source_user_id: None,
+        }
+    }
+
+    fn message(id: &str, at: i64, labels: &[&str], body: &str) -> GmailFullMessage {
+        GmailFullMessage {
+            message_id: id.to_string(),
+            thread_id: Some("thread-1".to_string()),
+            label_ids: labels.iter().map(|label| (*label).to_string()).collect(),
+            internal_date_epoch_ms: Some(at),
+            subject: Some("Question".to_string()),
+            from: None,
+            to: None,
+            headers: Vec::new(),
+            plain_text_body: body.to_string(),
+            html_body: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn thread_result_marks_a_sent_message_after_the_source() {
+        let result = email_thread_result(
+            &source(),
+            vec![
+                message("inbound-1", 1_000, &["INBOX"], "Can you help?"),
+                message("sent-1", 2_000, &["SENT"], "Yes, we can."),
+            ],
+        );
+
+        assert_eq!(result["sent_after_source"], json!(true));
+        assert!(result["guidance"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("do not create another reply draft"));
+    }
+
+    #[test]
+    fn thread_result_ignores_a_sent_message_before_the_source() {
+        let result = email_thread_result(
+            &source(),
+            vec![
+                message("sent-1", 500, &["sent"], "Earlier message"),
+                message("inbound-1", 1_000, &["INBOX"], "New question"),
+            ],
+        );
+
+        assert_eq!(result["sent_after_source"], json!(false));
     }
 }
 
