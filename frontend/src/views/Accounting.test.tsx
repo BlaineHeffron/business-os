@@ -2,11 +2,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountingFinancialsResponse } from "../types/generated/AccountingFinancialsResponse";
+import type { AccountingConnectorStatus } from "../types/generated/AccountingConnectorStatus";
 import type { AccountingInvoiceRow } from "../types/generated/AccountingInvoiceRow";
 import type { AccountingSyncInfo } from "../types/generated/AccountingSyncInfo";
 import type { CustomerTierSyncRun } from "../types/generated/CustomerTierSyncRun";
 import Accounting, {
   AccountingMarginTrend,
+  AccountingReconnectNotice,
   CustomerTierSyncPanel,
   accountingDueLabel,
   accountingInvoiceMatchesBucket,
@@ -214,6 +216,24 @@ afterEach(() => {
 });
 
 describe("Accounting rendered states", () => {
+  it("directs the operator to reconnect after OAuth authorization fails", () => {
+    const status: AccountingConnectorStatus = {
+      provider: "qbo",
+      connected: true,
+      reconnect_required: true,
+      connection_error_code: "qbo_token_rejected",
+      connect_url: "/api/connectors/qbo/connect",
+    };
+    const html = renderToStaticMarkup(
+      createElement(AccountingReconnectNotice, { status }),
+    );
+
+    expect(html).toContain("QuickBooks needs to be reconnected");
+    expect(html).toContain("Cached numbers remain available");
+    expect(html).toContain('href="/api/connectors/qbo/connect"');
+    expect(html).toContain("Reconnect QuickBooks");
+  });
+
   it("renders the real loading state without starting browser effects", () => {
     const html = renderToStaticMarkup(
       createElement(Accounting, {

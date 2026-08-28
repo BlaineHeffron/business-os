@@ -74,6 +74,7 @@ impl<C: QboHttp> AuthRecovery for QboAuthRecovery<'_, C> {
 pub const ACCOUNTING_SYNC_COOLDOWN_MS: u64 = 120_000;
 /// Refresh the access token when it expires within this window.
 const ACCESS_TOKEN_SLACK_MS: u64 = 5 * 60 * 1000;
+const TOKEN_PERSIST_RETRY_DELAYS_MS: [u64; 3] = [50, 150, 300];
 /// Pseudo-entity name for the P&L period cache's backoff/error state.
 pub const ENTITY_PNL: &str = "pnl";
 pub const ENTITY_BALANCE_SHEET: &str = "balance_sheet";
@@ -302,6 +303,9 @@ pub fn prepare_qbo_credentials(
     let Some(mut credential) = credential else {
         return Ok(None);
     };
+    if credential.reconnect_required {
+        return Ok(None);
+    }
     if let Some(token) = credential.access_token.clone() {
         if credential.access_token_expires_at_ms > now + ACCESS_TOKEN_SLACK_MS {
             return Ok(Some((credential, token, 0)));
@@ -846,14 +850,63 @@ fn refresh_and_persist(
     refresh_token: &str,
     now: u64,
 ) -> Result<QboTokenGrant, AccountingError> {
-    let grant = refresher.refresh(refresh_token, now)?;
-    let mut persistence = state.persistence.lock();
-    store::update_tokens_after_refresh(persistence.connection(), &state.client_id, &grant, now)
-        .map_err(|err| AccountingError::Permanent {
-            code: "qbo_token_persist_failed".to_string(),
-            message: err.to_string(),
-        })?;
+    let grant = match refresher.refresh(refresh_token, now) {
+        Ok(grant) => grant,
+        Err(error) => {
+            if matches!(
+                &error,
+                AccountingError::Permanent { code, .. } if code == "qbo_token_rejected"
+            ) {
+                if let Err(store_error) = persist_with_lock_retry(|| {
+                    let mut persistence = state.persistence.lock();
+                    store::mark_reconnect_required(
+                        persistence.connection(),
+                        &state.client_id,
+                        "qbo_token_rejected",
+                        now,
+                    )
+                }) {
+                    tracing::warn!(
+                        error = %store_error,
+                        "failed to save QuickBooks reconnect requirement"
+                    );
+                }
+            }
+            return Err(error);
+        }
+    };
+    persist_with_lock_retry(|| {
+        let mut persistence = state.persistence.lock();
+        store::update_tokens_after_refresh(persistence.connection(), &state.client_id, &grant, now)
+    })
+    .map_err(|err| AccountingError::Permanent {
+        code: "qbo_token_persist_failed".to_string(),
+        message: err.to_string(),
+    })?;
     Ok(grant)
+}
+
+pub(super) fn persist_with_lock_retry<T>(
+    mut operation: impl FnMut() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    for delay_ms in TOKEN_PERSIST_RETRY_DELAYS_MS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if is_sqlite_busy(&error) => {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    operation()
+}
+
+fn is_sqlite_busy(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::Sqlite(message)
+            if message.contains("database is locked") || message.contains("database is busy")
+    )
 }
 
 fn record_entity_error(

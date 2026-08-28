@@ -244,6 +244,8 @@ pub fn connector_status(
         return Ok(AccountingConnectorStatus {
             provider,
             connected: configured,
+            reconnect_required: false,
+            connection_error_code: None,
             realm_id: None,
             environment: None,
             connected_by: None,
@@ -261,6 +263,8 @@ pub fn connector_status(
         return Ok(AccountingConnectorStatus {
             provider,
             connected: configured,
+            reconnect_required: false,
+            connection_error_code: None,
             realm_id: None,
             environment: None,
             connected_by: None,
@@ -271,14 +275,18 @@ pub fn connector_status(
         });
     }
     if let Some(credential) = store::get_credential(conn, client_id)? {
+        let connect_url = (credential.reconnect_required && oauth_app_from_env().is_some())
+            .then(|| "/api/connectors/qbo/connect".to_string());
         return Ok(AccountingConnectorStatus {
             provider,
             connected: true,
+            reconnect_required: credential.reconnect_required,
+            connection_error_code: credential.connection_error_code,
             realm_id: Some(credential.realm_id),
             environment: Some(credential.environment),
             connected_by: Some(credential.connected_by_user_id),
             refresh_token_expires_at_ms: Some(credential.refresh_token_expires_at_ms),
-            connect_url: None,
+            connect_url,
             blocked_reason: None,
         });
     }
@@ -297,6 +305,8 @@ pub fn connector_status(
     Ok(AccountingConnectorStatus {
         provider,
         connected: false,
+        reconnect_required: false,
+        connection_error_code: None,
         realm_id: None,
         environment: None,
         connected_by: None,

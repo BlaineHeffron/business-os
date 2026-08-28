@@ -106,6 +106,40 @@ function providerLabel(provider: string | undefined): string {
   return "QuickBooks";
 }
 
+export function AccountingReconnectNotice({
+  status,
+}: {
+  status: AccountingConnectorStatus;
+}) {
+  if (!status.reconnect_required) return null;
+  const provider = providerLabel(status.provider);
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-amber-700/60 bg-amber-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <div className="text-sm font-semibold text-amber-200">
+          {provider} needs to be reconnected.
+        </div>
+        <div className="mt-1 text-xs text-amber-300">
+          {provider} rejected the saved authorization. Reconnect to resume updates.
+          Cached numbers remain available.
+        </div>
+      </div>
+      {status.connect_url ? (
+        <a
+          href={status.connect_url}
+          className="inline-flex shrink-0 items-center justify-center rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70"
+        >
+          Reconnect {provider}
+        </a>
+      ) : (
+        <span className="text-xs text-amber-300">
+          Ask an administrator to enable the OAuth connection.
+        </span>
+      )}
+    </div>
+  );
+}
+
 function outboxLabel(run: CustomerTierSyncRun): string | null {
   if (run.status === "staged") return null;
   const job = run.outbox_job;
@@ -378,6 +412,10 @@ export default function Accounting({
   });
 
   const syncNow = async () => {
+    if (status?.reconnect_required) {
+      setNotice(`${providerLabel(status.provider)} must be reconnected before updates can resume.`);
+      return;
+    }
     setSyncBusy(true);
     setNotice(null);
     try {
@@ -506,6 +544,7 @@ export default function Accounting({
       financials.metric_baseline_cents != null ||
       financials.metric_pending_reason != null);
   const provider = providerLabel(status?.provider);
+  const reconnectRequired = status?.reconnect_required ?? false;
   const metricAboveBaseline = financials?.metric_above_baseline_cents ?? null;
   const metricValue = financials?.metric_value_cents ?? null;
   const metricBaseline = financials?.metric_baseline_cents ?? null;
@@ -554,20 +593,30 @@ export default function Accounting({
             variant="secondary"
             size="sm"
             busy={syncBusy}
-            disabled={syncBusy || syncing}
+            disabled={syncBusy || syncing || reconnectRequired}
             onClick={() => void syncNow()}
           >
-            {syncBusy ? "Syncing…" : syncing ? "Updating…" : "Refresh"}
+            {reconnectRequired
+              ? "Reconnect required"
+              : syncBusy
+                ? "Syncing…"
+                : syncing
+                  ? "Updating…"
+                  : "Refresh"}
           </Button>
         </div>
       </div>
+
+      {reconnectRequired ? (
+        <AccountingReconnectNotice status={status!} />
+      ) : null}
 
       {notice ? (
         <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-300">
           {notice}
         </div>
       ) : null}
-      {sync?.last_error ? (
+      {sync?.last_error && !reconnectRequired ? (
         <div className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
           The last accounting refresh hit a problem; numbers may be behind.
           Try Refresh in a couple of minutes.

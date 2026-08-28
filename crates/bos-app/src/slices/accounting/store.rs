@@ -38,6 +38,9 @@ pub struct StoredQboCredential {
     pub access_token_expires_at_ms: u64,
     pub connected_by_user_id: String,
     pub connected_at_ms: u64,
+    pub reconnect_required: bool,
+    pub connection_error_code: Option<String>,
+    pub connection_error_at_ms: Option<u64>,
 }
 
 pub fn get_credential(
@@ -47,7 +50,8 @@ pub fn get_credential(
     let row = conn
         .query_row(
             "SELECT realm_id, environment, refresh_token, refresh_token_expires_at_ms, \
-             access_token, access_token_expires_at_ms, connected_by_user_id, connected_at_ms \
+             access_token, access_token_expires_at_ms, connected_by_user_id, connected_at_ms, \
+             reconnect_required, connection_error_code, connection_error_at_ms \
              FROM qbo_credentials WHERE client_id = ?1",
             params![client_id],
             |row| {
@@ -60,6 +64,11 @@ pub fn get_credential(
                     access_token_expires_at_ms: row.get::<_, i64>(5)? as u64,
                     connected_by_user_id: row.get(6)?,
                     connected_at_ms: row.get::<_, i64>(7)? as u64,
+                    reconnect_required: row.get::<_, i64>(8)? != 0,
+                    connection_error_code: row.get(9)?,
+                    connection_error_at_ms: row
+                        .get::<_, Option<i64>>(10)?
+                        .map(|value| value as u64),
                 })
             },
         )
@@ -144,8 +153,9 @@ pub fn store_credential(
             tx.execute(
                 "INSERT INTO qbo_credentials \
                  (client_id, realm_id, environment, refresh_token, refresh_token_expires_at_ms, \
-                  access_token, access_token_expires_at_ms, connected_by_user_id, connected_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                  access_token, access_token_expires_at_ms, connected_by_user_id, connected_at_ms, \
+                  reconnect_required, connection_error_code, connection_error_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, NULL) \
                  ON CONFLICT (client_id) DO UPDATE SET \
                    realm_id = excluded.realm_id, \
                    environment = excluded.environment, \
@@ -154,7 +164,9 @@ pub fn store_credential(
                    access_token = excluded.access_token, \
                    access_token_expires_at_ms = excluded.access_token_expires_at_ms, \
                    connected_by_user_id = excluded.connected_by_user_id, \
-                   connected_at_ms = excluded.connected_at_ms",
+                   connected_at_ms = excluded.connected_at_ms, \
+                   reconnect_required = 0, connection_error_code = NULL, \
+                   connection_error_at_ms = NULL",
                 params![
                     client,
                     realm,
@@ -211,7 +223,8 @@ pub fn update_tokens_after_refresh(
                 "UPDATE qbo_credentials SET \
                    refresh_token = ?2, refresh_token_expires_at_ms = ?3, \
                    access_token = ?4, access_token_expires_at_ms = ?5, \
-                   last_refreshed_at_ms = ?6 \
+                   last_refreshed_at_ms = ?6, reconnect_required = 0, \
+                   connection_error_code = NULL, connection_error_at_ms = NULL \
                  WHERE client_id = ?1",
                 params![
                     owned_client,
@@ -222,6 +235,54 @@ pub fn update_tokens_after_refresh(
                     now_ms as i64,
                 ],
             )?;
+            Ok(())
+        },
+    )
+}
+
+/// Record that the provider rejected the stored OAuth grant. Cached accounting
+/// data remains available while the UI requests an attended reconnection.
+pub fn mark_reconnect_required(
+    conn: &mut Connection,
+    client_id: &str,
+    error_code: &str,
+    now_ms: u64,
+) -> Result<MutationOutcome, StoreError> {
+    let after = serde_json::json!({
+        "reconnect_required": true,
+        "connection_error_code": error_code,
+    })
+    .to_string();
+    let idempotency_key = format!("qbo_reconnect_required:{error_code}:{now_ms}");
+    let owned_client = client_id.to_string();
+    let owned_error_code = error_code.to_string();
+    store_core::mutate(
+        conn,
+        MutationRequest {
+            client_id,
+            entity_kind: CREDENTIAL_ENTITY_KIND,
+            entity_id: "qbo",
+            change_kind: "reconnect_required",
+            actor_id: SYNC_ACTOR,
+            actor_kind: ActorKindDto::System,
+            expected_revision: None,
+            idempotency_key: &idempotency_key,
+            correlation_id: None,
+            causation_id: None,
+            before_json: None,
+            after_json: Some(after),
+            now_ms,
+        },
+        move |tx| {
+            let updated = tx.execute(
+                "UPDATE qbo_credentials SET reconnect_required = 1, \
+                 connection_error_code = ?2, connection_error_at_ms = ?3 \
+                 WHERE client_id = ?1",
+                params![owned_client, owned_error_code, now_ms as i64],
+            )?;
+            if updated != 1 {
+                return Err(StoreError::Domain("qbo credential missing".to_string()));
+            }
             Ok(())
         },
     )

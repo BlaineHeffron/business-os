@@ -24,6 +24,7 @@ export function isRevisionConflict(err: unknown): boolean {
 
 const ERROR_MESSAGES: Record<string, string> = {
   accounting_provider_not_writable: "Accounting is not set up for this action. Ask your administrator to finish setup.",
+  qbo_token_rejected: "QuickBooks authorization expired. Reconnect QuickBooks to resume updates.",
   attention_level_invalid: "Choose a valid attention filter.",
   calendar_draft_already_active: "This work item already has an active calendar draft.",
   calendar_draft_end_invalid: "Use a valid end date and time for the calendar event.",
