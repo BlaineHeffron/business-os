@@ -5,7 +5,7 @@ RUN npm --prefix frontend ci
 COPY frontend frontend
 RUN npm --prefix frontend run build
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /source
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
