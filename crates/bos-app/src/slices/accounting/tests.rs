@@ -660,6 +660,72 @@ fn token_persistence_retries_only_sqlite_lock_errors() {
     .expect_err("domain error");
     assert!(matches!(error, StoreError::Domain(_)));
     assert_eq!(*domain_attempts.lock().expect("lock"), 1);
+
+    let busy_attempts = Mutex::new(0_u32);
+    worker::persist_with_lock_retry(|| {
+        *busy_attempts.lock().expect("lock") += 1;
+        Err::<(), _>(StoreError::Sqlite("SQLITE_BUSY: database schema is locked".to_string()))
+    })
+    .expect_err("busy exhausted");
+    assert_eq!(*busy_attempts.lock().expect("lock"), 4);
+}
+
+#[test]
+fn seeded_reconnect_flag_skips_refresh_without_calling_provider() {
+    let state = test_state();
+    connect(&state, 1_000);
+    {
+        let mut persistence = state.persistence.lock();
+        store::mark_reconnect_required(
+            persistence.connection(),
+            CLIENT,
+            "qbo_token_rejected",
+            2_000,
+        )
+        .expect("seed flag");
+    }
+    let unused_refresher = FakeRefresher::with(Vec::new());
+    let mut budget = 8;
+    let skipped =
+        worker::prepare_qbo_credentials(&state, &unused_refresher, &mut budget, 3_000)
+            .expect("wait for reconnect");
+    assert!(skipped.is_none());
+    assert_eq!(unused_refresher.call_count(), 0);
+    assert_eq!(budget, 8);
+}
+
+#[test]
+fn reconnect_latch_skips_refresh_when_durable_flag_is_missing() {
+    let state = test_state();
+    connect(&state, 1_000);
+    store::latch_reconnect_required(CLIENT);
+    let unused_refresher = FakeRefresher::with(Vec::new());
+    let mut budget = 8;
+    let skipped =
+        worker::prepare_qbo_credentials(&state, &unused_refresher, &mut budget, 3_000)
+            .expect("latched");
+    assert!(skipped.is_none());
+    assert_eq!(unused_refresher.call_count(), 0);
+
+    {
+        let mut persistence = state.persistence.lock();
+        store::store_credential(
+            persistence.connection(),
+            CLIENT,
+            "realm-1",
+            "sandbox",
+            &grant("reconnected", 4_000),
+            "user_example",
+            4_000,
+        )
+        .expect("reconnect clears latch");
+    }
+    let still_fresh = FakeRefresher::with(Vec::new());
+    let prepared =
+        worker::prepare_qbo_credentials(&state, &still_fresh, &mut budget, 4_000)
+            .expect("usable after reconnect");
+    assert!(prepared.is_some());
+    assert_eq!(still_fresh.call_count(), 0);
 }
 
 #[test]

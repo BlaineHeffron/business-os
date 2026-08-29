@@ -225,11 +225,26 @@ async fn sync_now(State(state): State<AppState>, headers: HeaderMap) -> Response
         ) {
             return *denied;
         }
-        service::connector_status(conn, &state.client_id).map(|status| status.connected)
+        service::connector_status(conn, &state.client_id)
     };
     match connected {
-        Ok(true) => {}
-        Ok(false) => {
+        Ok(status) if status.reconnect_required => {
+            return (
+                StatusCode::CONFLICT,
+                Json(AccountingSyncNowResponse {
+                    accepted: false,
+                    reason: Some(
+                        status
+                            .connection_error_code
+                            .unwrap_or_else(|| "qbo_token_rejected".to_string()),
+                    ),
+                    next_allowed_at_ms: 0,
+                }),
+            )
+                .into_response()
+        }
+        Ok(status) if status.connected => {}
+        Ok(_) => {
             return (
                 StatusCode::CONFLICT,
                 Json(AccountingSyncNowResponse {

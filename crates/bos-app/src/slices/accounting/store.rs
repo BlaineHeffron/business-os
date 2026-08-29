@@ -6,6 +6,9 @@
 //! BEFORE store_core::mutate and skipped entirely — a steady-state cycle
 //! writes zero rows anywhere (no receipts, no timestamp churn).
 
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
 use bos_contracts::receipt::ActorKindDto;
 use bos_integrations::accounting_read::{
     BalanceSheetSummary, BillRecord, CustomerRecord, InvoiceRecord,
@@ -27,6 +30,29 @@ pub const SYNC_ACTOR: &str = "accounting_sync_pump";
 pub const ENTITY_INVOICE: &str = "invoice";
 pub const ENTITY_BILL: &str = "bill";
 pub const ENTITY_CUSTOMER: &str = "customer";
+
+/// Process-local latch so a rejected grant is not retried if SQLite failed
+/// to persist `reconnect_required`. Cleared when a new grant is stored.
+static RECONNECT_LATCH: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn reconnect_latch() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    RECONNECT_LATCH
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+pub(super) fn latch_reconnect_required(client_id: &str) {
+    reconnect_latch().insert(client_id.to_string());
+}
+
+pub(super) fn reconnect_latched(client_id: &str) -> bool {
+    reconnect_latch().contains(client_id)
+}
+
+fn clear_reconnect_latch(client_id: &str) {
+    reconnect_latch().remove(client_id);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredQboCredential {
@@ -109,7 +135,7 @@ pub fn store_credential(
         grant.clone(),
         connected_by.to_string(),
     );
-    store_core::mutate(
+    let outcome = store_core::mutate(
         conn,
         MutationRequest {
             client_id,
@@ -181,7 +207,9 @@ pub fn store_credential(
             )?;
             Ok(())
         },
-    )
+    )?;
+    clear_reconnect_latch(client_id);
+    Ok(outcome)
 }
 
 /// Persist a rotated grant. MUST be called immediately after every refresh —
@@ -201,7 +229,7 @@ pub fn update_tokens_after_refresh(
     let idempotency_key = format!("qbo_token_refresh:{now_ms}");
     let owned_client = client_id.to_string();
     let owned_grant = grant.clone();
-    store_core::mutate(
+    let outcome = store_core::mutate(
         conn,
         MutationRequest {
             client_id,
@@ -237,7 +265,9 @@ pub fn update_tokens_after_refresh(
             )?;
             Ok(())
         },
-    )
+    )?;
+    clear_reconnect_latch(client_id);
+    Ok(outcome)
 }
 
 /// Record that the provider rejected the stored OAuth grant. Cached accounting
@@ -253,10 +283,10 @@ pub fn mark_reconnect_required(
         "connection_error_code": error_code,
     })
     .to_string();
-    let idempotency_key = format!("qbo_reconnect_required:{error_code}:{now_ms}");
+    let idempotency_key = format!("qbo_reconnect_required:{client_id}");
     let owned_client = client_id.to_string();
     let owned_error_code = error_code.to_string();
-    store_core::mutate(
+    let outcome = store_core::mutate(
         conn,
         MutationRequest {
             client_id,
@@ -285,7 +315,9 @@ pub fn mark_reconnect_required(
             }
             Ok(())
         },
-    )
+    )?;
+    latch_reconnect_required(client_id);
+    Ok(outcome)
 }
 
 /// Delete the credential; with `purge`, also drop every cached snapshot and

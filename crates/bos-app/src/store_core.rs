@@ -68,6 +68,25 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
+impl StoreError {
+    /// True when SQLite asked the caller to retry because the file is busy.
+    pub fn is_sqlite_busy(&self) -> bool {
+        match self {
+            Self::Sqlite(message) => sqlite_busy_message(message),
+            Self::Domain(_) => false,
+        }
+    }
+}
+
+fn sqlite_busy_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("database is locked")
+        || lower.contains("database is busy")
+        || lower.contains("sqlite_busy")
+        || lower.contains("sqlite_locked")
+        || lower.contains("database schema is locked")
+}
+
 #[derive(Debug, Clone)]
 pub struct ReceiptPayloadCompactionBatch<'a> {
     pub client_id: &'a str,

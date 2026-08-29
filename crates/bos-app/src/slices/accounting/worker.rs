@@ -303,7 +303,7 @@ pub fn prepare_qbo_credentials(
     let Some(mut credential) = credential else {
         return Ok(None);
     };
-    if credential.reconnect_required {
+    if credential.reconnect_required || store::reconnect_latched(&state.client_id) {
         return Ok(None);
     }
     if let Some(token) = credential.access_token.clone() {
@@ -857,6 +857,9 @@ fn refresh_and_persist(
                 &error,
                 AccountingError::Permanent { code, .. } if code == "qbo_token_rejected"
             ) {
+                // Stop further refresh attempts even if the durable flag
+                // cannot be written on this cycle.
+                store::latch_reconnect_required(&state.client_id);
                 if let Err(store_error) = persist_with_lock_retry(|| {
                     let mut persistence = state.persistence.lock();
                     store::mark_reconnect_required(
@@ -886,27 +889,22 @@ fn refresh_and_persist(
     Ok(grant)
 }
 
+/// Retries only SQLite busy/locked errors. Sleeps on the calling thread;
+/// `refresh_and_persist` runs on the accounting sync worker, never on an
+/// HTTP request task.
 pub(super) fn persist_with_lock_retry<T>(
     mut operation: impl FnMut() -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     for delay_ms in TOKEN_PERSIST_RETRY_DELAYS_MS {
         match operation() {
             Ok(value) => return Ok(value),
-            Err(error) if is_sqlite_busy(&error) => {
+            Err(error) if error.is_sqlite_busy() => {
                 std::thread::sleep(Duration::from_millis(delay_ms));
             }
             Err(error) => return Err(error),
         }
     }
     operation()
-}
-
-fn is_sqlite_busy(error: &StoreError) -> bool {
-    matches!(
-        error,
-        StoreError::Sqlite(message)
-            if message.contains("database is locked") || message.contains("database is busy")
-    )
 }
 
 fn record_entity_error(

@@ -535,14 +535,18 @@ fn system_health(
                 .clone();
             crate::slices::accounting::service::sync_info(conn, &state.client_id, &status)?
         };
-        let mut accounting = provider_sync_health_item(
-            "Accounting",
-            connector.connected,
-            sync.sync_enabled,
-            sync.in_flight,
-            sync.backfill_complete,
-            sync.last_error.is_some(),
-        );
+        let mut accounting = if connector.reconnect_required {
+            health_item("Accounting", "Reconnect needed", "warning")
+        } else {
+            provider_sync_health_item(
+                "Accounting",
+                connector.connected,
+                sync.sync_enabled,
+                sync.in_flight,
+                sync.backfill_complete,
+                sync.last_error.is_some(),
+            )
+        };
         if accounting.tone.as_deref() != Some("ok") {
             accounting.target = Some(accounting_target(None));
         }
