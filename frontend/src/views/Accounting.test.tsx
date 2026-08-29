@@ -2,14 +2,18 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountingFinancialsResponse } from "../types/generated/AccountingFinancialsResponse";
+import type { AccountingConnectorStatus } from "../types/generated/AccountingConnectorStatus";
 import type { AccountingInvoiceRow } from "../types/generated/AccountingInvoiceRow";
 import type { AccountingSyncInfo } from "../types/generated/AccountingSyncInfo";
 import type { CustomerTierSyncRun } from "../types/generated/CustomerTierSyncRun";
 import Accounting, {
   AccountingMarginTrend,
+  AccountingReconnectNotice,
+  AccountingRefreshMessages,
   CustomerTierSyncPanel,
   accountingDueLabel,
   accountingInvoiceMatchesBucket,
+  accountingSyncButtonLabel,
 } from "./Accounting";
 
 const sync: AccountingSyncInfo = {
@@ -214,6 +218,52 @@ afterEach(() => {
 });
 
 describe("Accounting rendered states", () => {
+  it("uses clear accounting sync action labels", () => {
+    expect(accountingSyncButtonLabel(true, false, false)).toBe("Reconnect required");
+    expect(accountingSyncButtonLabel(false, true, false)).toBe("Syncing…");
+    expect(accountingSyncButtonLabel(false, false, true)).toBe("Updating…");
+    expect(accountingSyncButtonLabel(false, false, false)).toBe("Refresh");
+  });
+
+  it("replaces the generic refresh error with reconnect guidance", () => {
+    const reconnectHtml = renderToStaticMarkup(
+      createElement(AccountingRefreshMessages, {
+        notice: null,
+        lastError: "token refresh failed",
+        reconnectRequired: true,
+      }),
+    );
+    expect(reconnectHtml).not.toContain("Try Refresh");
+
+    const retryHtml = renderToStaticMarkup(
+      createElement(AccountingRefreshMessages, {
+        notice: "A refresh is already running.",
+        lastError: "temporary error",
+        reconnectRequired: false,
+      }),
+    );
+    expect(retryHtml).toContain("A refresh is already running");
+    expect(retryHtml).toContain("Try Refresh");
+  });
+
+  it("directs the operator to reconnect after OAuth authorization fails", () => {
+    const status: AccountingConnectorStatus = {
+      provider: "qbo",
+      connected: true,
+      reconnect_required: true,
+      connection_error_code: "qbo_token_rejected",
+      connect_url: "/api/connectors/qbo/connect",
+    };
+    const html = renderToStaticMarkup(
+      createElement(AccountingReconnectNotice, { status }),
+    );
+
+    expect(html).toContain("QuickBooks needs to be reconnected");
+    expect(html).toContain("Cached numbers remain available");
+    expect(html).toContain('href="/api/connectors/qbo/connect"');
+    expect(html).toContain("Reconnect QuickBooks");
+  });
+
   it("renders the real loading state without starting browser effects", () => {
     const html = renderToStaticMarkup(
       createElement(Accounting, {

@@ -11,6 +11,14 @@ pub struct AccountingConnectorStatus {
     /// Which accounting provider this instance talks to ("qbo" | "invoice_ninja").
     pub provider: String,
     pub connected: bool,
+    /// True when the stored OAuth grant cannot refresh and the operator must
+    /// complete the provider consent flow again.
+    #[serde(default)]
+    pub reconnect_required: bool,
+    /// Safe machine-readable cause. This field never contains provider tokens
+    /// or raw provider responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realm_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22,6 +30,7 @@ pub struct AccountingConnectorStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub refresh_token_expires_at_ms: Option<u64>,
+    /// Present when connection or reconnection is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

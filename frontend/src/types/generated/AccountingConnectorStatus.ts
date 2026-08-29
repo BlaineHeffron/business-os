@@ -4,9 +4,23 @@ export type AccountingConnectorStatus = {
 /**
  * Which accounting provider this instance talks to ("qbo" | "invoice_ninja").
  */
-provider: string, connected: boolean, realm_id?: string | null, environment?: string | null, connected_by?: string | null,
+provider: string, connected: boolean,
+/**
+ * True when the stored OAuth grant cannot refresh and the operator must
+ * complete the provider consent flow again.
+ */
+reconnect_required: boolean,
+/**
+ * Safe machine-readable cause. This field never contains provider tokens
+ * or raw provider responses.
+ */
+connection_error_code?: string | null, realm_id?: string | null, environment?: string | null, connected_by?: string | null,
 /**
  * When the rotating refresh token dies if never used again (~100 days
  * from the last refresh) — the UI warns as it approaches.
  */
-refresh_token_expires_at_ms?: number | null, connect_url?: string | null, blocked_reason?: string | null, };
+refresh_token_expires_at_ms?: number | null,
+/**
+ * Present when connection or reconnection is available.
+ */
+connect_url?: string | null, blocked_reason?: string | null, };
