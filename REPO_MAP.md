@@ -390,7 +390,8 @@ Structured health for cross-instance support monitoring: identity, pump guard st
 
 | Method | Path | Summary |
 | --- | --- | --- |
-| GET | `/readyz` | Unauthenticated structured liveness (mounted core, serves even when the slice is disabled) |
+| GET | `/livez`, `/health`, `/healthz` | Unauthenticated liveness (`ok` text/plain). Trailing slashes and HEAD included. Mounted core. |
+| GET | `/readyz` | Unauthenticated structured liveness JSON (mounted core, serves even when the slice is disabled) |
 | GET | `/api/diagnostics/health` | Operator-gated health: identity, pump statuses, outbox backlog, windowed error rollups, enabled slices |
 
 ### `inventory` — Inventory cached views (Stockforge)

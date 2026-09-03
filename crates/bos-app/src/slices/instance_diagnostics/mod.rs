@@ -19,6 +19,11 @@ pub const SLICE: SliceSpec = SliceSpec {
     routes: &[
         RouteSpec {
             method: "GET",
+            path: "/livez",
+            summary: "Unauthenticated liveness (`ok` text/plain). Also /health, /healthz, trailing slashes, HEAD",
+        },
+        RouteSpec {
+            method: "GET",
             path: "/readyz",
             summary: "Unauthenticated structured liveness (mounted core, serves even when the slice is disabled)",
         },
