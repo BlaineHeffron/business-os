@@ -1321,13 +1321,20 @@ pub fn build_router(state: AppState) -> Router {
         ("work_queue", crate::slices::work_queue::routes::router()),
     ];
     // /readyz lives beside /livez, outside slice enablement: the support hub
-    // must get structured liveness from every instance, always.
+    // must get structured liveness from every instance, always. Common probe
+    // aliases (/health, /healthz, trailing slashes) share the same handlers so
+    // status monitors do not get a 200 SPA document (false-green).
+    let livez_route = get(livez);
+    let readyz_route = get(crate::slices::instance_diagnostics::routes::readyz);
     let mut router = Router::new()
-        .route("/livez", get(|| async { "ok" }))
-        .route(
-            "/readyz",
-            get(crate::slices::instance_diagnostics::routes::readyz),
-        )
+        .route("/livez", livez_route.clone())
+        .route("/livez/", livez_route.clone())
+        .route("/health", livez_route.clone())
+        .route("/health/", livez_route.clone())
+        .route("/healthz", livez_route.clone())
+        .route("/healthz/", livez_route)
+        .route("/readyz", readyz_route.clone())
+        .route("/readyz/", readyz_route)
         .route("/api/session", post(login_session))
         .route("/api/session/visibility", get(session_visibility))
         .route("/api/session/logout", post(logout_session))
@@ -1426,12 +1433,29 @@ async fn session_visibility(
     }
 }
 
+async fn livez() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "ok",
+    )
+        .into_response()
+}
+
+fn is_infra_probe_path(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path.eq_ignore_ascii_case("livez")
+        || path.eq_ignore_ascii_case("readyz")
+        || path.eq_ignore_ascii_case("health")
+        || path.eq_ignore_ascii_case("healthz")
+}
+
 /// Serve the embedded SPA: exact asset match first, then index.html for any
 /// non-API GET (client-side routing), then the registry index when no bundle
-/// is embedded.
+/// is embedded. Infra probe paths never fall through to HTML — a 200 SPA
+/// document is a false-green for status monitors.
 async fn spa_or_index(uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    if path.starts_with("api/") {
+    if path.starts_with("api/") || is_infra_probe_path(path) {
         return error_response(StatusCode::NOT_FOUND, "route_not_found");
     }
     if !path.is_empty() {
@@ -2469,6 +2493,104 @@ mod tests {
         .expect("pool acquisition should time out promptly");
         assert!(result.is_err(), "pool exhaustion should return 503");
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn liveness_probes_are_plain_ok_not_spa_html() {
+        let router = build_router(test_state_configured(None, &[]));
+
+        for path in ["/livez", "/livez/", "/health", "/health/", "/healthz", "/healthz/"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_type.starts_with("text/plain"),
+                "{path} must be text/plain, got {content_type}"
+            );
+            let body = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .expect("body")
+                .to_bytes();
+            assert_eq!(&body[..], b"ok", "{path}");
+        }
+
+        for path in ["/livez", "/health", "/healthz"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::head(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "HEAD {path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_type.starts_with("text/plain"),
+                "HEAD {path} must be text/plain, got {content_type}"
+            );
+        }
+
+        for path in ["/readyz", "/readyz/"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_type.starts_with("application/json"),
+                "{path} must be JSON, got {content_type}"
+            );
+        }
+
+        for path in ["/HEALTH", "/Healthz", "/READYZ", "/Livez"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                !content_type.contains("text/html"),
+                "{path} must not be SPA HTML, got {content_type}"
+            );
+        }
     }
 
     #[tokio::test]
