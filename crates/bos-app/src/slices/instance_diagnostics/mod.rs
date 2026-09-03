@@ -20,12 +20,12 @@ pub const SLICE: SliceSpec = SliceSpec {
         RouteSpec {
             method: "GET",
             path: "/livez",
-            summary: "Unauthenticated liveness (`ok` text/plain). Also /health, /healthz, trailing slashes, HEAD",
+            summary: "Unauthenticated liveness (`ok` text/plain). Aliases /health and /healthz (and trailing slashes, HEAD) are registered in http.rs, not as extra RouteSpecs",
         },
         RouteSpec {
             method: "GET",
             path: "/readyz",
-            summary: "Unauthenticated structured liveness (mounted core, serves even when the slice is disabled)",
+            summary: "Unauthenticated structured liveness JSON (mounted core, including /readyz/; serves even when the slice is disabled)",
         },
         RouteSpec {
             method: "GET",

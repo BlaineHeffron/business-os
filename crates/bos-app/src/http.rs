@@ -1442,10 +1442,11 @@ async fn livez() -> Response {
 }
 
 fn is_infra_probe_path(path: &str) -> bool {
-    matches!(
-        path.trim_end_matches('/').to_ascii_lowercase().as_str(),
-        "livez" | "readyz" | "health" | "healthz"
-    )
+    let path = path.trim_end_matches('/');
+    path.eq_ignore_ascii_case("livez")
+        || path.eq_ignore_ascii_case("readyz")
+        || path.eq_ignore_ascii_case("health")
+        || path.eq_ignore_ascii_case("healthz")
 }
 
 /// Serve the embedded SPA: exact asset match first, then index.html for any
@@ -2525,44 +2526,71 @@ mod tests {
             assert_eq!(&body[..], b"ok", "{path}");
         }
 
-        let response = router
-            .clone()
-            .oneshot(
-                axum::http::Request::head("/livez")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(
-            content_type.starts_with("text/plain"),
-            "HEAD /livez must be text/plain, got {content_type}"
-        );
+        for path in ["/livez", "/health", "/healthz"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::head(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "HEAD {path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_type.starts_with("text/plain"),
+                "HEAD {path} must be text/plain, got {content_type}"
+            );
+        }
 
-        let response = router
-            .oneshot(
-                axum::http::Request::get("/readyz/")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(
-            content_type.starts_with("application/json"),
-            "/readyz/ must be JSON, got {content_type}"
-        );
+        for path in ["/readyz", "/readyz/"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                content_type.starts_with("application/json"),
+                "{path} must be JSON, got {content_type}"
+            );
+        }
+
+        for path in ["/HEALTH", "/Healthz", "/READYZ", "/Livez"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                !content_type.contains("text/html"),
+                "{path} must not be SPA HTML, got {content_type}"
+            );
+        }
     }
 
     #[tokio::test]
