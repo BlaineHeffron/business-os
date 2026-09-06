@@ -194,6 +194,18 @@ async fn draft_action(
     };
     let outcome = match request.action {
         CrmRecordDraftActionKind::Approve => {
+            // Ownership before provider: match invoice/ledger so a personal
+            // user cannot learn provider-config state from a foreign draft.
+            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
+                Ok(Some(found)) => found.draft,
+                Ok(None) => {
+                    return error_response(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "crm_record_draft_not_found",
+                    )
+                }
+                Err(err) => return store_error_response(err),
+            };
             // Both CRM providers run a records ensure-chain (EspoCRM and
             // HubSpot); the job is built for whichever is configured.
             let provider = match crate::slices::crm_drafts::service::configured_crm_provider() {
@@ -205,16 +217,6 @@ async fn draft_action(
                         "crm_provider_invalid",
                     );
                 }
-            };
-            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
-                Ok(Some(found)) => found.draft,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "crm_record_draft_not_found",
-                    )
-                }
-                Err(err) => return store_error_response(err),
             };
             let job = match service::build_approval_job(&draft, &actor_id, ctx.now_ms, provider) {
                 Ok(job) => job,
