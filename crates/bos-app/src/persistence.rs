@@ -463,6 +463,10 @@ const MIGRATION_SOURCES: &[(&str, &str)] = &[
         "0112_qbo_reconnect_state",
         include_str!("persistence/migrations/0112_qbo_reconnect_state.sql"),
     ),
+    (
+        "0113_draft_source_user",
+        include_str!("persistence/migrations/0113_draft_source_user.sql"),
+    ),
 ];
 
 fn migrations() -> Migrations<'static> {

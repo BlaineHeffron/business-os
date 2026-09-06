@@ -21,11 +21,12 @@ use tower::ServiceExt;
 
 use super::service;
 use super::store::{self, DraftActionContext};
-use crate::http::{build_router, test_support::test_state};
+use crate::http::{build_router, test_support::test_state, OperatorScope};
 use crate::outbox::{AttemptOutcome, ClaimedJob};
 use crate::slices::enrichment::store as enrichment_store;
 
 const CLIENT: &str = "test-client";
+const ALL_SCOPE: OperatorScope = OperatorScope::All;
 
 #[test]
 fn invoice_fill_request_includes_background_when_present() {
@@ -498,7 +499,7 @@ fn approve_enqueues_the_stripe_job_in_one_tx() {
     let draft_id = staged_draft(&state, "itm_1");
     let mut persistence = state.persistence.lock();
     let conn = persistence.connection();
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -515,6 +516,7 @@ fn approve_enqueues_the_stripe_job_in_one_tx() {
         DraftActionContext {
             client_id: CLIENT,
             actor_id: "avery",
+            scope: &ALL_SCOPE,
             expected_revision: None,
             idempotency_key: "approve:1",
             now_ms: 2_000,
@@ -523,7 +525,7 @@ fn approve_enqueues_the_stripe_job_in_one_tx() {
         &job,
     )
     .expect("approve");
-    let approved = store::get_draft(conn, CLIENT, &draft_id)
+    let approved = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists");
     assert_eq!(approved.draft.status, InvoiceDraftStatus::Approved);
@@ -541,7 +543,7 @@ fn approve_enqueues_the_invoice_ninja_job_in_one_tx() {
     let draft_id = staged_draft(&state, "itm_in_1");
     let mut persistence = state.persistence.lock();
     let conn = persistence.connection();
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -559,6 +561,7 @@ fn approve_enqueues_the_invoice_ninja_job_in_one_tx() {
         DraftActionContext {
             client_id: CLIENT,
             actor_id: "avery",
+            scope: &ALL_SCOPE,
             expected_revision: None,
             idempotency_key: "approve:invoice-ninja",
             now_ms: 2_000,
@@ -567,7 +570,7 @@ fn approve_enqueues_the_invoice_ninja_job_in_one_tx() {
         &job,
     )
     .expect("approve");
-    let approved = store::get_draft(conn, CLIENT, &draft_id)
+    let approved = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists");
     assert_eq!(approved.draft.status, InvoiceDraftStatus::Approved);
@@ -590,6 +593,7 @@ fn approval_requires_a_customer_email() {
         DraftActionContext {
             client_id: CLIENT,
             actor_id: "operator",
+            scope: &ALL_SCOPE,
             expected_revision: None,
             idempotency_key: "edit:1",
             now_ms: 1_500,
@@ -610,7 +614,7 @@ fn approval_requires_a_customer_email() {
     )
     .expect("edit");
     // …then approval refuses at both gates (job build + store).
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -629,6 +633,7 @@ fn edits_recompute_totals_and_reject_bad_lines() {
     let ctx = |key: &'static str| DraftActionContext {
         client_id: CLIENT,
         actor_id: "operator",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: key,
         now_ms: 1_500,
@@ -651,7 +656,7 @@ fn edits_recompute_totals_and_reject_bad_lines() {
         }],
     )
     .expect("edit");
-    let edited = store::get_draft(conn, CLIENT, &draft_id)
+    let edited = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -699,7 +704,7 @@ fn delivery_dry_runs_while_the_gate_is_closed() {
     let draft_id = staged_draft(&state, "itm_1");
     let mut persistence = state.persistence.lock();
     let conn = persistence.connection();
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -754,7 +759,7 @@ fn invoice_ninja_arm_builds_a_draft_job_and_dry_runs() {
     let draft_id = staged_draft(&state, "itm_1");
     let mut persistence = state.persistence.lock();
     let conn = persistence.connection();
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -1104,6 +1109,7 @@ fn customer_email_prefilled_from_the_items_crm_draft() {
         item_id: item_id.to_string(),
         source_kind: "operator_note".to_string(),
         source_ref: "note_d".to_string(),
+        source_user_id: None,
         status: bos_contracts::crm_record_drafts::CrmRecordDraftStatus::Staged,
         create_company: false,
         company_name: Some("Example Company".to_string()),
@@ -1355,6 +1361,7 @@ fn customer_enrichment_grafts_missing_values_without_overwriting_existing_contex
         DraftActionContext {
             client_id: CLIENT,
             actor_id: service::CUSTOMER_ENRICHMENT_ACTOR,
+            scope: &ALL_SCOPE,
             expected_revision: None,
             idempotency_key: "enrich:customer:graft",
             now_ms: 3_000,
@@ -1364,7 +1371,7 @@ fn customer_enrichment_grafts_missing_values_without_overwriting_existing_contex
     )
     .expect("apply");
     assert!(outcome.is_some());
-    let enriched = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let enriched = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;
@@ -1409,6 +1416,7 @@ fn customer_enrichment_grafts_missing_values_without_overwriting_existing_contex
         DraftActionContext {
             client_id: CLIENT,
             actor_id: service::CUSTOMER_ENRICHMENT_ACTOR,
+            scope: &ALL_SCOPE,
             expected_revision: None,
             idempotency_key: "enrich:customer:locked",
             now_ms: 3_000,
@@ -1421,7 +1429,7 @@ fn customer_enrichment_grafts_missing_values_without_overwriting_existing_contex
         outcome.is_none(),
         "enrichment should not mutate when CRM/operator context wins"
     );
-    let unchanged = store::get_draft(conn, CLIENT, &locked.draft_id)
+    let unchanged = store::get_draft(conn, CLIENT, &locked.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("exists")
         .draft;

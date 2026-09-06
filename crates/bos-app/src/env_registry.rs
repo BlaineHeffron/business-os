@@ -1588,7 +1588,7 @@ pub const BOS_ACCOUNTING_VISIBILITY_POLICY: EnvVar = EnvVar {
 
 pub const BOS_OPERATOR_TOKEN: EnvVar = EnvVar {
     name: "BOS_OPERATOR_TOKEN",
-    description: "Bearer token required on operator routes. Unset = open (local dev only).",
+    description: "Bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token.",
     group: EnvVarGroup::InfraServer,
     secret: true,
     default: None,

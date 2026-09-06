@@ -48,6 +48,10 @@ pub struct InvoiceDraft {
     pub item_id: String,
     pub source_kind: String,
     pub source_ref: String,
+    /// Operator user this draft is bound to, inherited from the originating
+    /// work item. Null = legacy rows / all-scope-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_user_id: Option<String>,
     pub status: InvoiceDraftStatus,
     /// Who gets billed (Stripe customer name).
     pub customer_name: String,

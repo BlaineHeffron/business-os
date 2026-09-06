@@ -7,7 +7,12 @@ export type InvoiceDraft = {
 /**
  * "inv_<item_id>_<attempt>" — one active (non-rejected) draft per item.
  */
-draft_id: string, item_id: string, source_kind: string, source_ref: string, status: InvoiceDraftStatus,
+draft_id: string, item_id: string, source_kind: string, source_ref: string,
+/**
+ * Operator user this draft is bound to, inherited from the originating
+ * work item. Null = legacy rows / all-scope-only.
+ */
+source_user_id?: string | null, status: InvoiceDraftStatus,
 /**
  * Who gets billed (Stripe customer name).
  */

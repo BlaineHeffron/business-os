@@ -5,8 +5,11 @@ use bos_contracts::ledger_drafts::{LedgerDraftStatus, LedgerDraftWithRevision, L
 use bos_contracts::receipt::ActorKindDto;
 use rusqlite::{params, Connection, Row};
 
+use crate::http::OperatorScope;
 use crate::outbox::{self, NewOutboxJob};
-use crate::slices::draft_store::{self, DraftStore, DraftTableSpec};
+use crate::slices::draft_store::{
+    self, DraftStore, DraftTableSpec, ScopedDraftStore, ScopedStatusDraftStore,
+};
 use crate::store_core::{self, MutationOutcome, MutationRequest, StoreError};
 
 pub const DRAFT_ENTITY_KIND: &str = "ledger_entry_draft";
@@ -24,7 +27,8 @@ const DRAFT_TABLE: DraftTableSpec = DraftTableSpec {
     reject_sql: REJECT_SQL,
 };
 
-const DRAFT_COLUMNS: &str = "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.status, \
+const DRAFT_COLUMNS: &str =
+    "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.source_user_id, d.status, \
      d.payer_name, d.payer_email, d.amount_cents, d.paid_date, d.description, \
      d.provenance_json, d.model, d.confidence, d.outbox_job_id, d.created_at_ms, \
      d.updated_at_ms, COALESCE(er.revision, 0) AS revision";
@@ -36,6 +40,7 @@ fn draft_from_row(row: &Row<'_>) -> rusqlite::Result<LedgerDraftWithRevision> {
             item_id: row.get("item_id")?,
             source_kind: row.get("source_kind")?,
             source_ref: row.get("source_ref")?,
+            source_user_id: row.get("source_user_id")?,
             status: status_from_str(&row.get::<_, String>("status")?),
             payer_name: row.get("payer_name")?,
             payer_email: row.get("payer_email")?,
@@ -89,6 +94,18 @@ impl DraftStore for LedgerDraftStore {
     }
 }
 
+impl ScopedDraftStore for LedgerDraftStore {
+    fn source_user_id(entry: &Self::WithRevision) -> Option<&str> {
+        entry.draft.source_user_id.as_deref()
+    }
+}
+
+impl ScopedStatusDraftStore for LedgerDraftStore {
+    fn map_status(row: &Row<'_>) -> rusqlite::Result<(String, Option<String>)> {
+        Ok((row.get(0)?, row.get(1)?))
+    }
+}
+
 pub fn active_draft_for_item(
     conn: &Connection,
     client_id: &str,
@@ -101,8 +118,9 @@ pub fn get_draft(
     conn: &Connection,
     client_id: &str,
     draft_id: &str,
+    scope: &OperatorScope,
 ) -> Result<Option<LedgerDraftWithRevision>, StoreError> {
-    draft_store::get_draft_unscoped::<LedgerDraftStore>(conn, client_id, draft_id)
+    draft_store::get_draft_scoped::<LedgerDraftStore>(conn, client_id, draft_id, scope)
 }
 
 pub fn list_drafts(
@@ -110,8 +128,9 @@ pub fn list_drafts(
     client_id: &str,
     item_id: Option<&str>,
     limit: usize,
+    scope: &OperatorScope,
 ) -> Result<Vec<LedgerDraftWithRevision>, StoreError> {
-    draft_store::list_drafts_unscoped::<LedgerDraftStore>(conn, client_id, item_id, limit)
+    draft_store::list_drafts_scoped::<LedgerDraftStore>(conn, client_id, item_id, limit, scope)
 }
 
 pub fn count_drafts_for_item(
@@ -161,10 +180,10 @@ pub fn insert_draft(
         move |tx| {
             tx.execute(
                 "INSERT INTO ledger_entry_drafts \
-                 (client_id, draft_id, item_id, source_kind, source_ref, status, payer_name, \
+                 (client_id, draft_id, item_id, source_kind, source_ref, source_user_id, status, payer_name, \
                   payer_email, amount_cents, paid_date, description, provenance_json, model, \
                   confidence, created_at_ms, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'staged', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?15, 'staged', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
                 params![
                     owned_client,
                     row.draft_id,
@@ -180,6 +199,7 @@ pub fn insert_draft(
                     row.model,
                     row.confidence,
                     row.created_at_ms as i64,
+                    row.source_user_id,
                 ],
             )
             .map_err(|err| match err {
@@ -195,7 +215,7 @@ pub fn insert_draft(
     )
 }
 
-pub use crate::slices::mutation_context::MutationContext as DraftActionContext;
+pub use crate::slices::mutation_context::ScopedMutationContext as DraftActionContext;
 
 /// Approve a staged draft: status flip + outbox enqueue, one transaction.
 pub fn approve_draft(
@@ -230,7 +250,8 @@ pub fn update_draft(
     paid_date_raw: &str,
     description_raw: &str,
 ) -> Result<MutationOutcome, StoreError> {
-    let current = require_status(conn, ctx.client_id, draft_id)?;
+    let (current, source_user_id) = require_status(conn, ctx.client_id, draft_id)?;
+    ctx.scope.require_source_user(source_user_id.as_deref())?;
     if current != "staged" {
         return Err(StoreError::Domain(format!(
             "ledger_draft_not_staged:{current}"
@@ -326,8 +347,8 @@ fn require_status(
     conn: &Connection,
     client_id: &str,
     draft_id: &str,
-) -> Result<String, StoreError> {
-    draft_store::require_status_unscoped::<LedgerDraftStore>(conn, client_id, draft_id)
+) -> Result<(String, Option<String>), StoreError> {
+    draft_store::require_status_scoped::<LedgerDraftStore>(conn, client_id, draft_id)
 }
 
 fn status_from_str(raw: &str) -> LedgerDraftStatus {

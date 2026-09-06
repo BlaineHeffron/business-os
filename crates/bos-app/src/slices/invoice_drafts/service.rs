@@ -378,6 +378,7 @@ pub fn draft_from_fill(
         item_id: item.item_id.clone(),
         source_kind: item.source_kind.clone(),
         source_ref: item.source_ref.clone(),
+        source_user_id: item.source_user_id.clone(),
         status: InvoiceDraftStatus::Staged,
         customer_name: fill.customer_name.clone(),
         customer_email: fill.customer_email.clone(),
@@ -790,9 +791,11 @@ impl enrichment_engine::EnrichableDraft for InvoiceCustomerEnrichmentSubject {
         if !self.apply_is_empty(&apply) {
             let mut persistence = state.persistence.lock();
             let idempotency_key = format!("invoiceenrich:{}:{}", self.draft.draft_id, run.run_id());
+            let apply_scope = crate::http::OperatorScope::All;
             let apply_ctx = super::store::DraftActionContext {
                 client_id: &state.client_id,
                 actor_id: ctx.actor_id,
+                scope: &apply_scope,
                 expected_revision: None,
                 idempotency_key: &idempotency_key,
                 now_ms: crate::http::now_ms(),
@@ -907,11 +910,12 @@ pub(crate) fn kick_on_demand_enrichment(
     actor_id: String,
     idempotency_key: String,
     domain_override: Option<String>,
+    scope: crate::http::OperatorScope,
 ) -> Result<OnDemandEnrichmentKickoff, OnDemandEnrichmentError> {
     let (draft, item, note_text, planned_run_id) = {
         let persistence = state.persistence.lock();
         let conn = persistence.connection_ref();
-        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id)?;
+        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id, &scope)?;
         let item = crate::slices::work_queue::store::get_item_unscoped(
             conn,
             &state.client_id,
@@ -1024,8 +1028,9 @@ fn load_staged_enrichment_draft(
     conn: &rusqlite::Connection,
     client_id: &str,
     draft_id: &str,
+    scope: &crate::http::OperatorScope,
 ) -> Result<InvoiceDraft, OnDemandEnrichmentError> {
-    let draft = super::store::get_draft(conn, client_id, draft_id)?
+    let draft = super::store::get_draft(conn, client_id, draft_id, scope)?
         .ok_or(OnDemandEnrichmentError::DraftNotFound)?
         .draft;
     if draft.status != InvoiceDraftStatus::Staged {
@@ -1083,8 +1088,14 @@ pub(crate) fn freshness_candidates(
     let epoch = enrichment_engine::freshness_epoch(stale_after_ms, now_ms);
     let persistence = state.persistence.lock();
     let conn = persistence.connection_ref();
-    for entry in super::store::list_drafts(conn, &state.client_id, None, limit.max(1) * 4)
-        .map_err(|err| err.to_string())?
+    for entry in super::store::list_drafts(
+        conn,
+        &state.client_id,
+        None,
+        limit.max(1) * 4,
+        &crate::http::OperatorScope::All,
+    )
+    .map_err(|err| err.to_string())?
     {
         if out.len() >= limit {
             break;
@@ -1165,8 +1176,12 @@ pub(crate) fn run_freshness_enrichment(
     let loaded = {
         let persistence = state.persistence.lock();
         let conn = persistence.connection_ref();
-        let draft = match load_staged_enrichment_draft(conn, &state.client_id, &candidate.draft_id)
-        {
+        let draft = match load_staged_enrichment_draft(
+            conn,
+            &state.client_id,
+            &candidate.draft_id,
+            &crate::http::OperatorScope::All,
+        ) {
             Ok(draft) => draft,
             Err(err) => {
                 tracing::info!(draft_id = %candidate.draft_id, error = ?err, "invoice freshness candidate skipped");

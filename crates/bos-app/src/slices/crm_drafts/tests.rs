@@ -510,6 +510,7 @@ fn crm_records_autoadd_and_produce_use_distinct_idempotency_keys() {
         item_id: item.item_id.clone(),
         source_kind: item.source_kind.clone(),
         source_ref: item.source_ref.clone(),
+        source_user_id: item.source_user_id.clone(),
         status: bos_contracts::crm_record_drafts::CrmRecordDraftStatus::Staged,
         create_company: false,
         company_name: None,

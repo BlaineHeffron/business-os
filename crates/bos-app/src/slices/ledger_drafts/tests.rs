@@ -9,10 +9,12 @@ use serde_json::json;
 
 use super::service;
 use super::store::{self, DraftActionContext};
+use crate::http::OperatorScope;
 use crate::outbox;
 use crate::persistence::Persistence;
 
 const CLIENT: &str = "test-client";
+const ALL_SCOPE: OperatorScope = OperatorScope::All;
 
 fn item() -> WorkItem {
     WorkItem {
@@ -155,6 +157,7 @@ fn ctx<'a>(key: &'a str, revision: Option<u64>) -> DraftActionContext<'a> {
     DraftActionContext {
         client_id: CLIENT,
         actor_id: "user_example",
+        scope: &ALL_SCOPE,
         expected_revision: revision,
         idempotency_key: key,
         now_ms: 5_000,
@@ -225,7 +228,7 @@ fn one_active_draft_per_item_and_edit_validation() {
         "June consulting (corrected)",
     )
     .expect("edit");
-    let updated = store::get_draft(conn, CLIENT, &draft_id)
+    let updated = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present");
     assert_eq!(updated.draft.payer_name, "Acme Holdings");
@@ -237,7 +240,7 @@ fn approval_enqueues_the_record_receipt_job_atomically() {
     let mut persistence = Persistence::open_in_memory().expect("db");
     let conn = persistence.connection();
     let draft_id = staged_draft(conn);
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present");
     let job = service::build_approval_job(&draft.draft, "user_example", 5_000).expect("job");
@@ -250,7 +253,7 @@ fn approval_enqueues_the_record_receipt_job_atomically() {
     assert_eq!(payload.approval.approved_by, "user_example");
 
     store::approve_draft(conn, ctx("a1", Some(1)), &draft_id, &job).expect("approve");
-    let approved = store::get_draft(conn, CLIENT, &draft_id)
+    let approved = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present");
     assert_eq!(approved.draft.status, LedgerDraftStatus::Approved);
@@ -273,7 +276,7 @@ fn execute_job_dry_runs_behind_the_gate_and_rejects_foreign_jobs() {
     let mut persistence = Persistence::open_in_memory().expect("db");
     let conn = persistence.connection();
     let draft_id = staged_draft(conn);
-    let draft = store::get_draft(conn, CLIENT, &draft_id)
+    let draft = store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present");
     let new_job = service::build_approval_job(&draft.draft, "user_example", 5_000).expect("job");
@@ -353,7 +356,7 @@ mod qbo_arm {
 
     fn draft(conn: &mut rusqlite::Connection) -> bos_contracts::ledger_drafts::LedgerEntryDraft {
         let draft_id = staged_draft(conn);
-        store::get_draft(conn, CLIENT, &draft_id)
+        store::get_draft(conn, CLIENT, &draft_id, &ALL_SCOPE)
             .expect("get")
             .expect("present")
             .draft

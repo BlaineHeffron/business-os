@@ -19,11 +19,12 @@ use tower::ServiceExt;
 
 use super::service::{self, RecordFill, RecordMatches};
 use super::store::{self, DraftActionContext};
-use crate::http::{build_router, test_support, test_support::EnvGuard};
+use crate::http::{build_router, test_support, test_support::EnvGuard, OperatorScope};
 use crate::persistence::Persistence;
 use crate::slices::enrichment::store as enrichment_store;
 
 const CLIENT: &str = "test-client";
+const ALL_SCOPE: OperatorScope = OperatorScope::All;
 
 fn accepted_item() -> WorkItem {
     WorkItem {
@@ -434,6 +435,7 @@ fn staged_draft() -> CrmRecordDraft {
         item_id: "wi_operator_note_note_1".to_string(),
         source_kind: "operator_note".to_string(),
         source_ref: "note_1".to_string(),
+        source_user_id: None,
         status: CrmRecordDraftStatus::Staged,
         create_company: true,
         company_name: Some("examplecompany".to_string()),
@@ -623,6 +625,7 @@ fn research_kickoff_is_explicitly_rejected_when_feature_off() {
         "idem_research_disabled".to_string(),
         Some("business-63644db2f2.example.test".to_string()),
         Some(EnrichmentMode::Research),
+        OperatorScope::All,
     );
     match result {
         Err(service::OnDemandEnrichmentError::ResearchModeDisabled) => {}
@@ -1093,13 +1096,14 @@ fn stage_via_insert_then_approve_round_trips() {
     let ctx = DraftActionContext {
         client_id: CLIENT,
         actor_id: "jordan",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: "approve_1",
         now_ms: 3_000,
     };
     store::approve_draft(conn, ctx, &draft.draft_id, &job).expect("approve");
 
-    let stored = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let stored = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present");
     assert_eq!(stored.draft.status, CrmRecordDraftStatus::Approved);
@@ -1711,6 +1715,7 @@ fn apply_web_enrichment_fills_nulls_keeps_existing_and_appends_provenance() {
     let ctx = DraftActionContext {
         client_id: CLIENT,
         actor_id: "crm_web_enrichment",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: "crmenrich_1",
         now_ms: 4_000,
@@ -1762,7 +1767,7 @@ fn apply_web_enrichment_fills_nulls_keeps_existing_and_appends_provenance() {
     };
     store::apply_web_enrichment(conn, ctx, &draft.draft_id, &apply, Some(&trace)).expect("apply");
 
-    let stored = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let stored = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present")
         .draft;
@@ -1805,12 +1810,13 @@ fn apply_web_enrichment_fills_nulls_keeps_existing_and_appends_provenance() {
     let approve_ctx = DraftActionContext {
         client_id: CLIENT,
         actor_id: "jordan",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: "approve_enrich",
         now_ms: 5_000,
     };
     store::approve_draft(conn, approve_ctx, &draft.draft_id, &job).expect("approve");
-    let approved = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let approved = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present")
         .draft;
@@ -1863,13 +1869,14 @@ fn apply_web_enrichment_replaces_weak_ai_company_name() {
     let ctx = DraftActionContext {
         client_id: CLIENT,
         actor_id: "crm_web_enrichment",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: "crmenrich_weak_name",
         now_ms: 4_000,
     };
     store::apply_web_enrichment(conn, ctx, &draft.draft_id, &apply, Some(&trace)).expect("apply");
 
-    let stored = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let stored = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present")
         .draft;
@@ -1903,13 +1910,14 @@ fn apply_web_enrichment_does_not_replace_operator_edited_company_name() {
     let ctx = DraftActionContext {
         client_id: CLIENT,
         actor_id: "crm_web_enrichment",
+        scope: &ALL_SCOPE,
         expected_revision: None,
         idempotency_key: "crmenrich_operator_name",
         now_ms: 4_000,
     };
     store::apply_web_enrichment(conn, ctx, &draft.draft_id, &apply, None).expect("apply");
 
-    let stored = store::get_draft(conn, CLIENT, &draft.draft_id)
+    let stored = store::get_draft(conn, CLIENT, &draft.draft_id, &ALL_SCOPE)
         .expect("get")
         .expect("present")
         .draft;
