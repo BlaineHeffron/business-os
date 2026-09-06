@@ -40,3 +40,7 @@ Keep all client overlays outside this repository.
 An overlay includes client names, identifiers, seeds, rules, credentials, provider accounts, hosts, and deployment settings.
 
 Use invented names and values in tests and examples.
+
+## Shepherd / merge gate
+
+Before merging, follow [docs/SHEPHERD.md](docs/SHEPHERD.md): pull Dueno/autoReview (and other non-author) findings and clear or explicitly defer them.
