@@ -32,6 +32,11 @@ fn serve() {
         .expect("BOS_STATE_DIR has a default");
     let bind = env_registry::string(&env_registry::BOS_SERVER_BIND)
         .expect("BOS_SERVER_BIND has a default");
+    let operator_token = env_registry::string(&env_registry::BOS_OPERATOR_TOKEN);
+    if let Err(err) = bos_app::http::require_bind_auth(&bind, operator_token.as_deref()) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 
     let persistence = match PersistencePool::open_at(&state_dir) {
         Ok(persistence) => persistence,

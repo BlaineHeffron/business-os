@@ -390,8 +390,8 @@ Structured health for cross-instance support monitoring: identity, pump guard st
 
 | Method | Path | Summary |
 | --- | --- | --- |
-| GET | `/livez`, `/health`, `/healthz` | Unauthenticated liveness (`ok` text/plain). Trailing slashes and HEAD included. Mounted core. |
-| GET | `/readyz` | Unauthenticated structured liveness JSON (mounted core, serves even when the slice is disabled) |
+| GET | `/livez` | Unauthenticated liveness (`ok` text/plain). Aliases /health and /healthz (and trailing slashes, HEAD) are registered in http.rs, not as extra RouteSpecs |
+| GET | `/readyz` | Unauthenticated structured liveness JSON (mounted core, including /readyz/; serves even when the slice is disabled) |
 | GET | `/api/diagnostics/health` | Operator-gated health: identity, pump statuses, outbox backlog, windowed error rollups, enabled slices |
 
 ### `inventory` — Inventory cached views (Stockforge)
@@ -757,7 +757,7 @@ Read models: work_queue_feed, work_queue_policies
 | `BOS_LLM_ROUTE_OVERRIDES` | — | Per-purpose typed-LLM routing overrides, comma list of purpose=api|harness|local optionally followed by :model (e.g. social_post_draft=local:qwen3). Local uses the loopback-only OpenAI-compatible profile and never falls back remotely. |
 | `BOS_LLM_TIMEOUT_MS` | `120000` | Timeout for one typed LLM task execution. |
 | `BOS_LOG_LEVEL` | `info` | Tracing filter (e.g. info, bos_app=debug). |
-| `BOS_OPERATOR_TOKEN` | — | Bearer token required on operator routes. Unset = open (local dev only). |
+| `BOS_OPERATOR_TOKEN` | — | Bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token. |
 | `BOS_OUTBOX_DELIVERY_ENABLED` | `1` | Run the outbox delivery worker (on by default; set 0 to pause all provider deliveries). |
 | `BOS_OUTBOX_DELIVERY_INTERVAL_SECS` | `15` | Seconds between outbox delivery polls. |
 | `BOS_OWNER_REPORT_ALLOWED_OPERATOR_USER_IDS` | — | Comma/space-separated operator user ids allowed to view, generate, and email owner reports. Overrides overlay [owner_reports].allowed_operator_user_ids. Empty = any authenticated operator. |

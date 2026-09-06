@@ -565,6 +565,7 @@ pub fn draft_from_fill(
         item_id: item.item_id.clone(),
         source_kind: item.source_kind.clone(),
         source_ref: item.source_ref.clone(),
+        source_user_id: item.source_user_id.clone(),
         status: CrmRecordDraftStatus::Staged,
         create_company,
         company_name: fill.company_name.clone(),
@@ -1588,9 +1589,11 @@ impl enrichment_engine::EnrichableDraft for CrmRecordEnrichmentSubject {
         // what it filled.
         let mut persistence = state.persistence.lock();
         let idempotency_key = format!("crmenrich:{}:{}", self.draft.draft_id, run.run_id());
+        let apply_scope = crate::http::OperatorScope::All;
         let apply_ctx = super::store::DraftActionContext {
             client_id: &state.client_id,
             actor_id: ctx.actor_id,
+            scope: &apply_scope,
             expected_revision: None,
             idempotency_key: &idempotency_key,
             now_ms: crate::http::now_ms(),
@@ -1772,6 +1775,7 @@ pub(crate) fn kick_on_demand_enrichment(
     idempotency_key: String,
     domain_override: Option<String>,
     mode: Option<EnrichmentMode>,
+    scope: crate::http::OperatorScope,
 ) -> Result<OnDemandEnrichmentKickoff, OnDemandEnrichmentError> {
     if mode == Some(EnrichmentMode::Research) {
         return kick_on_demand_research_enrichment(
@@ -1780,12 +1784,13 @@ pub(crate) fn kick_on_demand_enrichment(
             actor_id,
             idempotency_key,
             domain_override,
+            scope,
         );
     }
     let (draft, item, note_text, planned_run_id) = {
         let persistence = state.persistence.lock();
         let conn = persistence.connection_ref();
-        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id)?;
+        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id, &scope)?;
         let item = crate::slices::work_queue::store::get_item_unscoped(
             conn,
             &state.client_id,
@@ -1874,6 +1879,7 @@ fn kick_on_demand_research_enrichment(
     actor_id: String,
     idempotency_key: String,
     domain_override: Option<String>,
+    scope: crate::http::OperatorScope,
 ) -> Result<OnDemandEnrichmentKickoff, OnDemandEnrichmentError> {
     let research_config = env_registry::agentic_web_research_config();
     if !research_config.enabled {
@@ -1883,7 +1889,7 @@ fn kick_on_demand_research_enrichment(
     let (draft, item, note_text, seed_domain, missing_fields, planned_run_id) = {
         let persistence = state.persistence.lock();
         let conn = persistence.connection_ref();
-        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id)?;
+        let draft = load_staged_enrichment_draft(conn, &state.client_id, &draft_id, &scope)?;
         let item = crate::slices::work_queue::store::get_item_unscoped(
             conn,
             &state.client_id,
@@ -2020,8 +2026,9 @@ fn load_staged_enrichment_draft(
     conn: &rusqlite::Connection,
     client_id: &str,
     draft_id: &str,
+    scope: &crate::http::OperatorScope,
 ) -> Result<CrmRecordDraft, OnDemandEnrichmentError> {
-    let draft = super::store::get_draft(conn, client_id, draft_id)?
+    let draft = super::store::get_draft(conn, client_id, draft_id, scope)?
         .ok_or(OnDemandEnrichmentError::DraftNotFound)?
         .draft;
     if draft.status != CrmRecordDraftStatus::Staged {
@@ -2165,9 +2172,11 @@ fn run_record_research_enrichment(
 
     let mut persistence = state.persistence.lock();
     let idempotency_key = format!("enrichment:{run_id}:research_apply");
+    let apply_scope = crate::http::OperatorScope::All;
     let apply_ctx = super::store::DraftActionContext {
         client_id: &state.client_id,
         actor_id,
+        scope: &apply_scope,
         expected_revision: None,
         idempotency_key: &idempotency_key,
         now_ms: crate::http::now_ms(),
@@ -2447,8 +2456,14 @@ pub(crate) fn freshness_candidates(
     let epoch = enrichment_engine::freshness_epoch(stale_after_ms, now_ms);
     let persistence = state.persistence.lock();
     let conn = persistence.connection_ref();
-    for entry in super::store::list_drafts(conn, &state.client_id, None, limit.max(1) * 4)
-        .map_err(|err| err.to_string())?
+    for entry in super::store::list_drafts(
+        conn,
+        &state.client_id,
+        None,
+        limit.max(1) * 4,
+        &crate::http::OperatorScope::All,
+    )
+    .map_err(|err| err.to_string())?
     {
         if out.len() >= limit {
             break;
@@ -2528,8 +2543,12 @@ pub(crate) fn run_freshness_enrichment(
     let loaded = {
         let persistence = state.persistence.lock();
         let conn = persistence.connection_ref();
-        let draft = match load_staged_enrichment_draft(conn, &state.client_id, &candidate.draft_id)
-        {
+        let draft = match load_staged_enrichment_draft(
+            conn,
+            &state.client_id,
+            &candidate.draft_id,
+            &crate::http::OperatorScope::All,
+        ) {
             Ok(draft) => draft,
             Err(err) => {
                 tracing::info!(draft_id = %candidate.draft_id, error = ?err, "crm freshness candidate skipped");
@@ -2786,18 +2805,23 @@ impl crate::produce::ProduceFlavor for Produce {
         let (drafts, note_text) = {
             let persistence = state.persistence.lock();
             let conn = persistence.connection_ref();
-            let drafts =
-                match super::store::list_drafts(conn, &state.client_id, Some(&item.item_id), 100) {
-                    Ok(entries) => entries
-                        .into_iter()
-                        .map(|entry| entry.draft)
-                        .filter(|draft| {
-                            draft.status == CrmRecordDraftStatus::Staged
-                                && (draft.create_company || draft.create_contact)
-                        })
-                        .collect::<Vec<_>>(),
-                    Err(_) => return,
-                };
+            let drafts = match super::store::list_drafts(
+                conn,
+                &state.client_id,
+                Some(&item.item_id),
+                100,
+                &crate::http::OperatorScope::All,
+            ) {
+                Ok(entries) => entries
+                    .into_iter()
+                    .map(|entry| entry.draft)
+                    .filter(|draft| {
+                        draft.status == CrmRecordDraftStatus::Staged
+                            && (draft.create_company || draft.create_contact)
+                    })
+                    .collect::<Vec<_>>(),
+                Err(_) => return,
+            };
             if drafts.is_empty() {
                 return;
             }

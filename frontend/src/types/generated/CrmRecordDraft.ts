@@ -10,7 +10,12 @@ export type CrmRecordDraft = {
  * "crd_<item_id>_<attempt>[_<contact_index>]" — multiple active drafts
  * are allowed when one source names multiple missing contacts.
  */
-draft_id: string, item_id: string, source_kind: string, source_ref: string, status: CrmRecordDraftStatus,
+draft_id: string, item_id: string, source_kind: string, source_ref: string,
+/**
+ * Operator user this draft is bound to, inherited from the originating
+ * work item. Null = legacy rows / all-scope-only.
+ */
+source_user_id?: string | null, status: CrmRecordDraftStatus,
 /**
  * Propose creating a Company record (false when one already matched).
  */

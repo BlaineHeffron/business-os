@@ -1,11 +1,13 @@
 //! Slice tests: user lifecycle (create/disable/rotate), token lookup, and
 //! the authentication seam (shared token vs personal token vs garbage).
 
-use axum::http::HeaderMap;
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode};
 use bos_contracts::operator_users::OperatorUser;
+use tower::ServiceExt;
 
 use super::store::{self, UserActionContext};
+use crate::http::build_router;
 use crate::http::test_support::test_state;
 use crate::persistence::{Persistence, PersistencePool};
 use crate::store_core::StoreError;
@@ -442,4 +444,247 @@ fn cookie_session_revalidates_the_underlying_token() {
             .expect("disable");
     }
     assert!(state.authenticate_operator(&headers).is_err());
+}
+
+async fn json_request(
+    router: axum::Router,
+    method: axum::http::Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> axum::response::Response {
+    let mut builder = Request::builder().method(method).uri(path);
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let body = if let Some(body) = body {
+        builder = builder.header("content-type", "application/json");
+        Body::from(body.to_string())
+    } else {
+        Body::empty()
+    };
+    router
+        .oneshot(builder.body(body).expect("request"))
+        .await
+        .expect("response")
+}
+
+async fn response_error(response: axum::response::Response) -> (StatusCode, String) {
+    let status = response.status();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .expect("body")
+        .to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let code = body
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (status, code)
+}
+
+fn two_personal_users() -> crate::http::AppState {
+    let state = test_state();
+    {
+        let mut persistence = state.persistence.lock();
+        let conn = persistence.connection();
+        store::create_user(
+            conn,
+            CLIENT,
+            "operator",
+            &user("jordan", "Jordan"),
+            "tok_jordan",
+            "u1",
+        )
+        .expect("jordan");
+        store::create_user(
+            conn,
+            CLIENT,
+            "operator",
+            &user("dana", "Dana"),
+            "tok_dana",
+            "u2",
+        )
+        .expect("dana");
+    }
+    state
+}
+
+#[tokio::test]
+async fn personal_user_cannot_administer_another_user() {
+    let state = two_personal_users();
+    let router = build_router(state.clone());
+
+    let (status, code) = response_error(
+        json_request(
+            router.clone(),
+            axum::http::Method::GET,
+            "/api/users",
+            Some("tok_jordan"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(code, "scope_forbidden");
+
+    let denials = [
+        (
+            "/api/users",
+            axum::http::Method::POST,
+            Some(serde_json::json!({
+                "display_name": "Riley",
+                "idempotency_key": "create_riley",
+                "actor_id": null
+            })),
+        ),
+        (
+            "/api/users/dana/action",
+            axum::http::Method::POST,
+            Some(serde_json::json!({
+                "action": "disable",
+                "expected_revision": null,
+                "idempotency_key": "disable_dana",
+                "actor_id": null
+            })),
+        ),
+        (
+            "/api/users/dana/rotate-token",
+            axum::http::Method::POST,
+            Some(serde_json::json!({
+                "idempotency_key": "rotate_dana",
+                "actor_id": null
+            })),
+        ),
+        (
+            "/api/users/dana/default-calendar",
+            axum::http::Method::POST,
+            Some(serde_json::json!({
+                "calendar_id": "team@calendar",
+                "expected_revision": null,
+                "idempotency_key": "cal_dana",
+                "actor_id": null
+            })),
+        ),
+    ];
+    for (path, method, body) in denials {
+        let (status, code) = response_error(
+            json_request(router.clone(), method, path, Some("tok_jordan"), body).await,
+        )
+        .await;
+        assert_eq!(
+            (path, status, code.as_str()),
+            (path, StatusCode::UNPROCESSABLE_ENTITY, "scope_forbidden")
+        );
+    }
+
+    {
+        let persistence = state.persistence.lock();
+        let dana = store::get_user(persistence.connection_ref(), CLIENT, "dana")
+            .expect("get")
+            .expect("dana");
+        assert!(dana.active);
+        assert!(dana.default_calendar_id.is_none());
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, "tok_dana")
+                .expect("lookup")
+                .is_some()
+        );
+        assert_eq!(
+            store::list_users(persistence.connection_ref(), CLIENT, false)
+                .expect("list")
+                .len(),
+            2
+        );
+    }
+}
+
+#[tokio::test]
+async fn personal_user_may_rotate_own_token_and_admin_may_rotate_others() {
+    let state = two_personal_users();
+    let router = build_router(state.clone());
+
+    let response = json_request(
+        router.clone(),
+        axum::http::Method::POST,
+        "/api/users/jordan/rotate-token",
+        Some("tok_jordan"),
+        Some(serde_json::json!({
+            "idempotency_key": "rotate_self",
+            "actor_id": null
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("json");
+    let new_jordan = body
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .expect("token")
+        .to_string();
+    assert_ne!(new_jordan, "tok_jordan");
+    {
+        let persistence = state.persistence.lock();
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, "tok_jordan")
+                .expect("old")
+                .is_none()
+        );
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, &new_jordan)
+                .expect("new")
+                .is_some()
+        );
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, "tok_dana")
+                .expect("dana")
+                .is_some()
+        );
+    }
+
+    let response = json_request(
+        router,
+        axum::http::Method::POST,
+        "/api/users/dana/rotate-token",
+        None,
+        Some(serde_json::json!({
+            "idempotency_key": "admin_rotate_dana",
+            "actor_id": null
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("json");
+    let new_dana = body
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .expect("token")
+        .to_string();
+    {
+        let persistence = state.persistence.lock();
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, "tok_dana")
+                .expect("old dana")
+                .is_none()
+        );
+        assert!(
+            store::find_active_by_token(persistence.connection_ref(), CLIENT, &new_dana)
+                .expect("new dana")
+                .is_some()
+        );
+    }
 }

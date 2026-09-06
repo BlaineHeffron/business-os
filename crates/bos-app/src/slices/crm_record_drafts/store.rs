@@ -11,8 +11,11 @@ use bos_contracts::crm_record_drafts::{
 use bos_contracts::receipt::ActorKindDto;
 use rusqlite::{params, Connection, Row};
 
+use crate::http::OperatorScope;
 use crate::outbox::{self, NewOutboxJob};
-use crate::slices::draft_store::{self, DraftStore, DraftTableSpec};
+use crate::slices::draft_store::{
+    self, DraftStore, DraftTableSpec, ScopedDraftStore, ScopedStatusDraftStore,
+};
 use crate::store_core::{self, MutationOutcome, MutationRequest, StoreError};
 
 pub const DRAFT_ENTITY_KIND: &str = "crm_record_draft";
@@ -30,7 +33,8 @@ const DRAFT_TABLE: DraftTableSpec = DraftTableSpec {
     reject_sql: REJECT_SQL,
 };
 
-const DRAFT_COLUMNS: &str = "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.status, \
+const DRAFT_COLUMNS: &str =
+    "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.source_user_id, d.status, \
      d.create_company, d.company_name, d.company_website, d.company_phone, d.company_address, \
      d.create_contact, d.contact_first_name, d.contact_last_name, d.contact_email, \
      d.contact_phone, d.contact_title, d.provider_ids_json, d.provenance_json, d.model, \
@@ -53,6 +57,7 @@ fn draft_from_row(row: &Row<'_>) -> rusqlite::Result<CrmRecordDraftWithRevision>
             item_id: row.get("item_id")?,
             source_kind: row.get("source_kind")?,
             source_ref: row.get("source_ref")?,
+            source_user_id: row.get("source_user_id")?,
             status: status_from_str(&row.get::<_, String>("status")?),
             create_company: row.get::<_, i64>("create_company")? != 0,
             company_name: row.get("company_name")?,
@@ -117,6 +122,18 @@ impl DraftStore for CrmRecordDraftStore {
     }
 }
 
+impl ScopedDraftStore for CrmRecordDraftStore {
+    fn source_user_id(entry: &Self::WithRevision) -> Option<&str> {
+        entry.draft.source_user_id.as_deref()
+    }
+}
+
+impl ScopedStatusDraftStore for CrmRecordDraftStore {
+    fn map_status(row: &Row<'_>) -> rusqlite::Result<(String, Option<String>)> {
+        Ok((row.get(0)?, row.get(1)?))
+    }
+}
+
 pub fn active_draft_for_item(
     conn: &Connection,
     client_id: &str,
@@ -129,8 +146,9 @@ pub fn get_draft(
     conn: &Connection,
     client_id: &str,
     draft_id: &str,
+    scope: &OperatorScope,
 ) -> Result<Option<CrmRecordDraftWithRevision>, StoreError> {
-    draft_store::get_draft_unscoped::<CrmRecordDraftStore>(conn, client_id, draft_id)
+    draft_store::get_draft_scoped::<CrmRecordDraftStore>(conn, client_id, draft_id, scope)
 }
 
 pub fn list_drafts(
@@ -138,8 +156,9 @@ pub fn list_drafts(
     client_id: &str,
     item_id: Option<&str>,
     limit: usize,
+    scope: &OperatorScope,
 ) -> Result<Vec<CrmRecordDraftWithRevision>, StoreError> {
-    draft_store::list_drafts_unscoped::<CrmRecordDraftStore>(conn, client_id, item_id, limit)
+    draft_store::list_drafts_scoped::<CrmRecordDraftStore>(conn, client_id, item_id, limit, scope)
 }
 
 pub fn count_drafts_for_item(
@@ -191,13 +210,13 @@ pub fn insert_draft(
         move |tx| {
             tx.execute(
                 "INSERT INTO crm_record_drafts \
-                 (client_id, draft_id, item_id, source_kind, source_ref, status, \
+                 (client_id, draft_id, item_id, source_kind, source_ref, source_user_id, status, \
                   create_company, company_name, company_website, company_phone, company_address, \
                   company_description, \
                   create_contact, contact_first_name, contact_last_name, contact_email, \
                   contact_phone, contact_title, provider_ids_json, provenance_json, model, \
                   confidence, created_at_ms, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'staged', ?6, ?7, ?8, ?9, ?10, ?22, ?11, ?12, ?13, \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?23, 'staged', ?6, ?7, ?8, ?9, ?10, ?22, ?11, ?12, ?13, \
                   ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?21)",
                 params![
                     owned_client,
@@ -222,6 +241,7 @@ pub fn insert_draft(
                     row.confidence,
                     row.created_at_ms as i64,
                     row.company_description,
+                    row.source_user_id,
                 ],
             )
             .map_err(|err| match err {
@@ -237,7 +257,7 @@ pub fn insert_draft(
     )
 }
 
-pub use crate::slices::mutation_context::MutationContext as DraftActionContext;
+pub use crate::slices::mutation_context::ScopedMutationContext as DraftActionContext;
 
 /// Approve a staged draft: status flip + outbox enqueue, one transaction.
 pub fn approve_draft(
@@ -284,7 +304,8 @@ pub fn update_draft(
     draft_id: &str,
     edit: &RecordEdit,
 ) -> Result<MutationOutcome, StoreError> {
-    let current = require_status(conn, ctx.client_id, draft_id)?;
+    let (current, source_user_id) = require_status(conn, ctx.client_id, draft_id)?;
+    ctx.scope.require_source_user(source_user_id.as_deref())?;
     if current != "staged" {
         return Err(StoreError::Domain(format!(
             "crm_record_draft_not_staged:{current}"
@@ -398,7 +419,8 @@ pub fn apply_web_enrichment(
     apply: &WebEnrichmentApply,
     trace: Option<&bos_contracts::crm_record_drafts::CrmEnrichmentTrace>,
 ) -> Result<MutationOutcome, StoreError> {
-    let current = require_status(conn, ctx.client_id, draft_id)?;
+    let (current, source_user_id) = require_status(conn, ctx.client_id, draft_id)?;
+    ctx.scope.require_source_user(source_user_id.as_deref())?;
     if current != "staged" {
         return Err(StoreError::Domain(format!(
             "crm_record_draft_not_staged:{current}"
@@ -579,8 +601,8 @@ fn require_status(
     conn: &Connection,
     client_id: &str,
     draft_id: &str,
-) -> Result<String, StoreError> {
-    draft_store::require_status_unscoped::<CrmRecordDraftStore>(conn, client_id, draft_id)
+) -> Result<(String, Option<String>), StoreError> {
+    draft_store::require_status_scoped::<CrmRecordDraftStore>(conn, client_id, draft_id)
 }
 
 fn status_from_str(raw: &str) -> CrmRecordDraftStatus {

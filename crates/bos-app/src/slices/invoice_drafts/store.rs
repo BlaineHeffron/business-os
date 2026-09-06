@@ -10,8 +10,11 @@ use bos_contracts::invoice_drafts::{
 use bos_contracts::receipt::ActorKindDto;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use crate::http::OperatorScope;
 use crate::outbox::{self, NewOutboxJob};
-use crate::slices::draft_store::{self, DraftStore, DraftTableSpec};
+use crate::slices::draft_store::{
+    self, DraftStore, DraftTableSpec, ScopedDraftStore, ScopedStatusDraftStore,
+};
 use crate::store_core::{self, MutationOutcome, MutationRequest, StoreError};
 
 pub const DRAFT_ENTITY_KIND: &str = "invoice_draft";
@@ -28,7 +31,8 @@ const DRAFT_TABLE: DraftTableSpec = DraftTableSpec {
     reject_sql: REJECT_SQL,
 };
 
-const DRAFT_COLUMNS: &str = "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.status, \
+const DRAFT_COLUMNS: &str =
+    "d.draft_id, d.item_id, d.source_kind, d.source_ref, d.source_user_id, d.status, \
      d.customer_name, d.customer_email, d.currency, d.line_items_json, d.subtotal_cents, \
      d.total_cents, d.due_date, d.memo, d.provenance_json, d.model, d.confidence, \
      d.outbox_job_id, d.created_at_ms, d.updated_at_ms, COALESCE(er.revision, 0) AS revision";
@@ -40,6 +44,7 @@ fn draft_from_row(row: &Row<'_>) -> rusqlite::Result<InvoiceDraftWithRevision> {
             item_id: row.get("item_id")?,
             source_kind: row.get("source_kind")?,
             source_ref: row.get("source_ref")?,
+            source_user_id: row.get("source_user_id")?,
             status: status_from_str(&row.get::<_, String>("status")?),
             customer_name: row.get("customer_name")?,
             customer_email: row.get("customer_email")?,
@@ -97,6 +102,18 @@ impl DraftStore for InvoiceDraftStore {
     }
 }
 
+impl ScopedDraftStore for InvoiceDraftStore {
+    fn source_user_id(entry: &Self::WithRevision) -> Option<&str> {
+        entry.draft.source_user_id.as_deref()
+    }
+}
+
+impl ScopedStatusDraftStore for InvoiceDraftStore {
+    fn map_status(row: &Row<'_>) -> rusqlite::Result<(String, Option<String>)> {
+        Ok((row.get(0)?, row.get(1)?))
+    }
+}
+
 pub fn active_draft_for_item(
     conn: &Connection,
     client_id: &str,
@@ -109,8 +126,9 @@ pub fn get_draft(
     conn: &Connection,
     client_id: &str,
     draft_id: &str,
+    scope: &OperatorScope,
 ) -> Result<Option<InvoiceDraftWithRevision>, StoreError> {
-    draft_store::get_draft_unscoped::<InvoiceDraftStore>(conn, client_id, draft_id)
+    draft_store::get_draft_scoped::<InvoiceDraftStore>(conn, client_id, draft_id, scope)
 }
 
 pub fn list_drafts(
@@ -118,8 +136,9 @@ pub fn list_drafts(
     client_id: &str,
     item_id: Option<&str>,
     limit: usize,
+    scope: &OperatorScope,
 ) -> Result<Vec<InvoiceDraftWithRevision>, StoreError> {
-    draft_store::list_drafts_unscoped::<InvoiceDraftStore>(conn, client_id, item_id, limit)
+    draft_store::list_drafts_scoped::<InvoiceDraftStore>(conn, client_id, item_id, limit, scope)
 }
 
 pub fn count_drafts_for_item(
@@ -171,11 +190,11 @@ pub fn insert_draft(
         move |tx| {
             tx.execute(
                 "INSERT INTO invoice_drafts \
-                 (client_id, draft_id, item_id, source_kind, source_ref, status, customer_name, \
+                 (client_id, draft_id, item_id, source_kind, source_ref, source_user_id, status, customer_name, \
                   customer_email, currency, line_items_json, subtotal_cents, total_cents, \
                   due_date, memo, provenance_json, model, confidence, created_at_ms, \
                   updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'staged', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?18, 'staged', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
                          ?14, ?15, ?16, ?17, ?17)",
                 params![
                     owned_client,
@@ -195,6 +214,7 @@ pub fn insert_draft(
                     row.model,
                     row.confidence,
                     row.created_at_ms as i64,
+                    row.source_user_id,
                 ],
             )
             .map_err(|err| match err {
@@ -210,7 +230,7 @@ pub fn insert_draft(
     )
 }
 
-pub use crate::slices::mutation_context::MutationContext as DraftActionContext;
+pub use crate::slices::mutation_context::ScopedMutationContext as DraftActionContext;
 
 /// One enrichment-sourced invoice customer value plus the provenance quote
 /// backing it.
@@ -248,15 +268,17 @@ pub fn apply_customer_enrichment(
         name: String,
         email: Option<String>,
         provenance_json: String,
+        source_user_id: Option<String>,
     }
     let Current {
         status,
         name,
         email,
         provenance_json,
+        source_user_id,
     } = conn
         .query_row(
-            "SELECT status, customer_name, customer_email, provenance_json \
+            "SELECT status, customer_name, customer_email, provenance_json, source_user_id \
              FROM invoice_drafts WHERE client_id = ?1 AND draft_id = ?2",
             params![ctx.client_id, draft_id],
             |row| {
@@ -265,11 +287,13 @@ pub fn apply_customer_enrichment(
                     name: row.get(1)?,
                     email: row.get(2)?,
                     provenance_json: row.get(3)?,
+                    source_user_id: row.get(4)?,
                 })
             },
         )
         .optional()?
         .ok_or_else(|| StoreError::Domain("invoice_draft_not_found".to_string()))?;
+    ctx.scope.require_source_user(source_user_id.as_deref())?;
     if status != "staged" {
         return Err(StoreError::Domain(format!(
             "invoice_draft_not_staged:{status}"
@@ -379,7 +403,7 @@ pub fn approve_draft(
     draft_id: &str,
     job: &NewOutboxJob,
 ) -> Result<MutationOutcome, StoreError> {
-    let (status, customer_email, total_cents) = require_draft(conn, ctx.client_id, draft_id)?;
+    let (status, customer_email, total_cents) = require_draft(conn, &ctx, draft_id)?;
     if status != "staged" {
         return Err(StoreError::Domain(format!(
             "invoice_draft_not_staged:{status}"
@@ -425,7 +449,7 @@ pub fn update_draft(
     memo_raw: &str,
     line_items_raw: &[InvoiceDraftLineItem],
 ) -> Result<MutationOutcome, StoreError> {
-    let (status, _, _) = require_draft(conn, ctx.client_id, draft_id)?;
+    let (status, _, _) = require_draft(conn, &ctx, draft_id)?;
     if status != "staged" {
         return Err(StoreError::Domain(format!(
             "invoice_draft_not_staged:{status}"
@@ -550,17 +574,20 @@ pub fn update_draft(
 
 fn require_draft(
     conn: &Connection,
-    client_id: &str,
+    ctx: &DraftActionContext<'_>,
     draft_id: &str,
 ) -> Result<(String, Option<String>, i64), StoreError> {
-    conn.query_row(
-        "SELECT status, customer_email, total_cents FROM invoice_drafts \
-         WHERE client_id = ?1 AND draft_id = ?2",
-        params![client_id, draft_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .optional()?
-    .ok_or_else(|| StoreError::Domain("invoice_draft_not_found".to_string()))
+    let (status, email, total, source_user_id): (String, Option<String>, i64, Option<String>) =
+        conn.query_row(
+            "SELECT status, customer_email, total_cents, source_user_id FROM invoice_drafts \
+             WHERE client_id = ?1 AND draft_id = ?2",
+            params![ctx.client_id, draft_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::Domain("invoice_draft_not_found".to_string()))?;
+    ctx.scope.require_source_user(source_user_id.as_deref())?;
+    Ok((status, email, total))
 }
 
 fn status_from_str(raw: &str) -> InvoiceDraftStatus {

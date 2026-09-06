@@ -241,6 +241,7 @@ pub fn draft_from_fill(
         item_id: item.item_id.clone(),
         source_kind: item.source_kind.clone(),
         source_ref: item.source_ref.clone(),
+        source_user_id: item.source_user_id.clone(),
         status: LedgerDraftStatus::Staged,
         payer_name: fill.payer_name.clone(),
         payer_email: fill.payer_email.clone(),

@@ -85,15 +85,17 @@ async fn drafts_list(
     headers: HeaderMap,
     Query(query): Query<DraftsQuery>,
 ) -> Response {
-    if let Err(denied) = state.require_operator(&headers) {
-        return *denied;
-    }
+    let scope = match state.require_scope(&headers) {
+        Ok(scope) => scope,
+        Err(denied) => return *denied,
+    };
     let persistence = state.persistence.lock();
     match store::list_drafts(
         persistence.connection_ref(),
         &state.client_id,
         query.item_id.as_deref(),
         100,
+        &scope,
     ) {
         Ok(drafts) => Json(InvoiceDraftsResponse { drafts }).into_response(),
         Err(err) => store_error_response(err),
@@ -148,6 +150,7 @@ async fn enrich_draft(
         }
     }
     let actor_id = auth.actor_or(None);
+    let scope = auth.scope.clone();
     let domain_override =
         match service::normalize_enrichment_domain_seed(request.domain_seed.as_deref()) {
             Ok(domain) => domain,
@@ -162,6 +165,7 @@ async fn enrich_draft(
         actor_id,
         request.idempotency_key,
         domain_override,
+        scope,
     ) {
         Ok(kickoff) => (
             StatusCode::ACCEPTED,
@@ -189,10 +193,12 @@ async fn draft_update(
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }
     let actor_id = auth.actor_or(request.actor_id.as_deref());
+    let scope = auth.scope.clone();
     let mut persistence = state.persistence.lock();
     let ctx = DraftActionContext {
         client_id: &state.client_id,
         actor_id: &actor_id,
+        scope: &scope,
         expected_revision: request.expected_revision,
         idempotency_key: &request.idempotency_key,
         now_ms: now_ms(),
@@ -226,17 +232,29 @@ async fn draft_action(
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }
     let actor_id = auth.actor_or(request.actor_id.as_deref());
+    let scope = auth.scope.clone();
     let mut persistence = state.persistence.lock();
     let conn = persistence.connection();
     let ctx = DraftActionContext {
         client_id: &state.client_id,
         actor_id: &actor_id,
+        scope: &scope,
         expected_revision: request.expected_revision,
         idempotency_key: &request.idempotency_key,
         now_ms: now_ms(),
     };
     let outcome = match request.action {
         InvoiceDraftActionKind::Approve => {
+            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
+                Ok(Some(found)) => found.draft,
+                Ok(None) => {
+                    return error_response(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invoice_draft_not_found",
+                    )
+                }
+                Err(err) => return store_error_response(err),
+            };
             // Provider seam: the draft invoice is created in whichever
             // invoicing system BOS_ACCOUNTING_PROVIDER names. QBO has no
             // invoice-draft write here — refuse loudly rather than stage an
@@ -264,16 +282,6 @@ async fn draft_action(
                         "accounting_provider_not_writable",
                     )
                 }
-            };
-            let draft = match store::get_draft(conn, &state.client_id, &draft_id) {
-                Ok(Some(found)) => found.draft,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "invoice_draft_not_found",
-                    )
-                }
-                Err(err) => return store_error_response(err),
             };
             let built = if provider == service::PROVIDER_STRIPE {
                 service::build_approval_job(&draft, &actor_id, ctx.now_ms)

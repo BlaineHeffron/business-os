@@ -1012,12 +1012,25 @@ impl AuthContext {
     pub fn require_all_scope(&self) -> Result<(), Box<Response>> {
         match &self.scope {
             OperatorScope::All => Ok(()),
-            OperatorScope::User(_) => Err(Box::new(error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "scope_forbidden",
-            ))),
+            OperatorScope::User(_) => Err(scope_forbidden()),
         }
     }
+
+    /// Administration, or the named user acting on their own record.
+    pub fn require_all_scope_or_self(&self, user_id: &str) -> Result<(), Box<Response>> {
+        match &self.scope {
+            OperatorScope::All => Ok(()),
+            OperatorScope::User(actor) if actor == user_id => Ok(()),
+            OperatorScope::User(_) => Err(scope_forbidden()),
+        }
+    }
+}
+
+fn scope_forbidden() -> Box<Response> {
+    Box::new(error_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "scope_forbidden",
+    ))
 }
 
 impl OperatorScope {
@@ -1075,6 +1088,45 @@ pub fn require_source_user(
     source_user_id: Option<&str>,
 ) -> Result<(), crate::store_core::StoreError> {
     scope.require_source_user(source_user_id)
+}
+
+/// Unauthenticated all-scope access is loopback local-dev only. A missing
+/// shared operator token on any other bind is a startup failure: personal
+/// users do not close anonymous all-scope access.
+pub fn require_bind_auth(bind: &str, operator_token: Option<&str>) -> Result<(), String> {
+    if operator_token
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty())
+    {
+        return Ok(());
+    }
+    if bind_host_is_loopback(bind) {
+        return Ok(());
+    }
+    Err(format!(
+        "BOS_OPERATOR_TOKEN is required when BOS_SERVER_BIND ({bind}) is not loopback"
+    ))
+}
+
+fn bind_host_is_loopback(bind: &str) -> bool {
+    let host = bind_host(bind);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+fn bind_host(bind: &str) -> &str {
+    let bind = bind.trim();
+    if let Some(rest) = bind.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host).unwrap_or(rest);
+    }
+    match bind.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => bind,
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -1434,11 +1486,7 @@ async fn session_visibility(
 }
 
 async fn livez() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "ok",
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "ok").into_response()
 }
 
 fn is_infra_probe_path(path: &str) -> bool {
@@ -1667,8 +1715,11 @@ mod tests {
     use axum::body::Body;
     use bos_contracts::calendar_drafts::{CalendarDraftStatus, CalendarEventDraft};
     use bos_contracts::crm_drafts::{CrmDraftStatus, CrmNoteDraft};
+    use bos_contracts::crm_record_drafts::{CrmRecordDraft, CrmRecordDraftStatus};
     use bos_contracts::email_drafts::{EmailDraftStatus, EmailReplyDraft};
     use bos_contracts::email_triage::FALLBACK_CATEGORY_ID;
+    use bos_contracts::invoice_drafts::{InvoiceDraft, InvoiceDraftLineItem, InvoiceDraftStatus};
+    use bos_contracts::ledger_drafts::{LedgerDraftStatus, LedgerEntryDraft};
     use bos_contracts::operator_users::OperatorUser;
     use bos_contracts::work_queue::{WorkItem, WorkItemStatus};
     use bos_integrations::accounting_read::InvoiceRecord;
@@ -1678,6 +1729,27 @@ mod tests {
     fn panic_test_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    #[test]
+    fn bind_auth_fails_closed_off_loopback_without_shared_token() {
+        assert!(require_bind_auth("127.0.0.1:4400", None).is_ok());
+        assert!(require_bind_auth("localhost:4400", None).is_ok());
+        assert!(require_bind_auth("[::1]:4400", None).is_ok());
+        assert!(require_bind_auth("127.0.0.1:4400", Some("")).is_ok());
+        assert!(require_bind_auth("0.0.0.0:4400", Some("secret")).is_ok());
+        assert!(require_bind_auth("[::]:4400", Some("secret")).is_ok());
+
+        // Personal-user-only setups still need a shared token on a public bind:
+        // missing shared token is anonymous all-scope, not personal-user auth.
+        for bind in ["0.0.0.0:4400", "[::]:4400", "192.168.1.10:4400"] {
+            let err = require_bind_auth(bind, None).expect_err(bind);
+            assert!(err.contains("BOS_OPERATOR_TOKEN"), "{bind}: {err}");
+            assert!(
+                require_bind_auth(bind, Some("   ")).is_err(),
+                "{bind} blank token"
+            );
+        }
     }
 
     #[test]
@@ -2072,6 +2144,10 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response_error_code(response_json(response).await),
+            "scope_forbidden"
+        );
         let user = {
             let persistence = state.persistence.lock();
             crate::slices::operator_users::store::get_user(
@@ -2083,6 +2159,369 @@ mod tests {
             .expect("user")
         };
         assert!(user.archived_at_ms.is_none());
+    }
+
+    fn e2e_invoice_draft(draft_id: &str, item: &WorkItem) -> InvoiceDraft {
+        InvoiceDraft {
+            draft_id: draft_id.to_string(),
+            item_id: item.item_id.clone(),
+            source_kind: item.source_kind.clone(),
+            source_ref: item.source_ref.clone(),
+            source_user_id: item.source_user_id.clone(),
+            status: InvoiceDraftStatus::Staged,
+            customer_name: "Dana Co".to_string(),
+            customer_email: Some("dana@example.test".to_string()),
+            currency: "usd".to_string(),
+            line_items: vec![InvoiceDraftLineItem {
+                line_number: 1,
+                label: "Work".to_string(),
+                description: None,
+                quantity: 1,
+                unit_amount_cents: 1000,
+                line_total_cents: 1000,
+            }],
+            subtotal_cents: 1000,
+            total_cents: 1000,
+            due_date: None,
+            memo: "Memo".to_string(),
+            provenance: Vec::new(),
+            model: "test-model".to_string(),
+            confidence: "high".to_string(),
+            outbox_job_id: None,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        }
+    }
+
+    fn e2e_ledger_draft(draft_id: &str, item: &WorkItem) -> LedgerEntryDraft {
+        LedgerEntryDraft {
+            draft_id: draft_id.to_string(),
+            item_id: item.item_id.clone(),
+            source_kind: item.source_kind.clone(),
+            source_ref: item.source_ref.clone(),
+            source_user_id: item.source_user_id.clone(),
+            status: LedgerDraftStatus::Staged,
+            payer_name: "Dana Co".to_string(),
+            payer_email: Some("dana@example.test".to_string()),
+            amount_cents: 150_000,
+            paid_date: "2026-06-01".to_string(),
+            description: "Payment".to_string(),
+            provenance: Vec::new(),
+            model: "test-model".to_string(),
+            confidence: "high".to_string(),
+            outbox_job_id: None,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        }
+    }
+
+    fn e2e_crm_record_draft(draft_id: &str, item: &WorkItem) -> CrmRecordDraft {
+        CrmRecordDraft {
+            draft_id: draft_id.to_string(),
+            item_id: item.item_id.clone(),
+            source_kind: item.source_kind.clone(),
+            source_ref: item.source_ref.clone(),
+            source_user_id: item.source_user_id.clone(),
+            status: CrmRecordDraftStatus::Staged,
+            create_company: true,
+            company_name: Some("Dana Co".to_string()),
+            company_website: Some("example.test".to_string()),
+            company_phone: None,
+            company_address: None,
+            company_description: None,
+            create_contact: true,
+            contact_first_name: Some("Dana".to_string()),
+            contact_last_name: Some("Lee".to_string()),
+            contact_email: Some("dana@example.test".to_string()),
+            contact_phone: None,
+            contact_title: None,
+            provider_ids: Default::default(),
+            provenance: Vec::new(),
+            enrichment_trace: None,
+            research_annotations: Vec::new(),
+            model: "test-model".to_string(),
+            confidence: "high".to_string(),
+            outbox_job_id: None,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        }
+    }
+
+    fn seed_unscoped_draft_surfaces(state: &AppState) {
+        let mut persistence = state.persistence.lock();
+        let conn = persistence.connection();
+        crate::slices::operator_users::store::create_user(
+            conn,
+            "test-client",
+            "operator",
+            &e2e_operator("jordan"),
+            "tok_jordan",
+            "create_jordan",
+        )
+        .expect("jordan");
+        crate::slices::operator_users::store::create_user(
+            conn,
+            "test-client",
+            "operator",
+            &e2e_operator("dana"),
+            "tok_dana",
+            "create_dana",
+        )
+        .expect("dana");
+        for (item_id, source_user_id, invoice_id, ledger_id, record_id) in [
+            (
+                "wi_jordan",
+                Some("jordan"),
+                "inv_jordan",
+                "led_jordan",
+                "crd_jordan",
+            ),
+            ("wi_dana", Some("dana"), "inv_dana", "led_dana", "crd_dana"),
+        ] {
+            let item = e2e_item(item_id, item_id, source_user_id);
+            crate::slices::work_queue::store::insert_item(conn, "test-client", &item)
+                .expect("item");
+            crate::slices::invoice_drafts::store::insert_draft(
+                conn,
+                "test-client",
+                "operator",
+                &e2e_invoice_draft(invoice_id, &item),
+                &format!("stage:{invoice_id}"),
+            )
+            .expect("invoice");
+            crate::slices::ledger_drafts::store::insert_draft(
+                conn,
+                "test-client",
+                "operator",
+                &e2e_ledger_draft(ledger_id, &item),
+                &format!("stage:{ledger_id}"),
+            )
+            .expect("ledger");
+            crate::slices::crm_record_drafts::store::insert_draft(
+                conn,
+                "test-client",
+                "operator",
+                &e2e_crm_record_draft(record_id, &item),
+                &format!("stage:{record_id}"),
+            )
+            .expect("crm record");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_e2e_scopes_invoice_ledger_crm_record_drafts() {
+        let state = test_state_configured(None, &[]);
+        seed_unscoped_draft_surfaces(&state);
+        let router = build_router(state.clone());
+
+        for (path, jordan_id, dana_id) in [
+            ("/api/invoice-drafts", "inv_jordan", "inv_dana"),
+            ("/api/ledger-drafts", "led_jordan", "led_dana"),
+            ("/api/crm-record-drafts", "crd_jordan", "crd_dana"),
+        ] {
+            let response = json_request(
+                router.clone(),
+                axum::http::Method::GET,
+                path,
+                Some("tok_jordan"),
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{path} jordan");
+            assert_eq!(
+                draft_id_set(&response_json(response).await),
+                vec![jordan_id]
+            );
+
+            let response = json_request(
+                router.clone(),
+                axum::http::Method::GET,
+                path,
+                Some("tok_dana"),
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{path} dana");
+            assert_eq!(draft_id_set(&response_json(response).await), vec![dana_id]);
+
+            let response =
+                json_request(router.clone(), axum::http::Method::GET, path, None, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path} all");
+            assert_eq!(
+                draft_id_set(&response_json(response).await),
+                vec![dana_id, jordan_id]
+            );
+        }
+
+        let mutation_denials = [
+            (
+                "/api/invoice-drafts/inv_dana/update",
+                serde_json::json!({
+                    "customer_name": "Hijack",
+                    "customer_email": "hijack@example.test",
+                    "due_date": null,
+                    "memo": "no",
+                    "line_items": [{
+                        "line_number": 1,
+                        "label": "Work",
+                        "quantity": 1,
+                        "unit_amount_cents": 1000,
+                        "line_total_cents": 1000
+                    }],
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_edit_dana_invoice",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/invoice-drafts/inv_dana/action",
+                serde_json::json!({
+                    "action": "reject",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_reject_dana_invoice",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/invoice-drafts/inv_dana/action",
+                serde_json::json!({
+                    "action": "approve",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_approve_dana_invoice",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/invoice-drafts/inv_dana/enrich",
+                serde_json::json!({
+                    "idempotency_key": "jordan_enrich_dana_invoice",
+                    "domain_seed": "example.test"
+                }),
+            ),
+            (
+                "/api/ledger-drafts/led_dana/update",
+                serde_json::json!({
+                    "payer_name": "Hijack",
+                    "payer_email": "hijack@example.test",
+                    "amount_cents": 1,
+                    "paid_date": "2026-06-01",
+                    "description": "no",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_edit_dana_ledger",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/ledger-drafts/led_dana/action",
+                serde_json::json!({
+                    "action": "reject",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_reject_dana_ledger",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/ledger-drafts/led_dana/action",
+                serde_json::json!({
+                    "action": "approve",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_approve_dana_ledger",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/crm-record-drafts/crd_dana/update",
+                serde_json::json!({
+                    "create_company": true,
+                    "company_name": "Hijack",
+                    "create_contact": true,
+                    "contact_first_name": "Hijack",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_edit_dana_record",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/crm-record-drafts/crd_dana/action",
+                serde_json::json!({
+                    "action": "reject",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_reject_dana_record",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/crm-record-drafts/crd_dana/enrich",
+                serde_json::json!({
+                    "idempotency_key": "jordan_enrich_dana_record",
+                    "domain_seed": "example.test"
+                }),
+            ),
+            (
+                "/api/crm-record-drafts/crd_dana/action",
+                serde_json::json!({
+                    "action": "approve",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_approve_dana_record",
+                    "actor_id": "jordan"
+                }),
+            ),
+        ];
+        for (path, body) in mutation_denials {
+            let response = json_request(
+                router.clone(),
+                axum::http::Method::POST,
+                path,
+                Some("tok_jordan"),
+                Some(body),
+            )
+            .await;
+            assert_ne!(response.status(), StatusCode::OK, "{path}");
+            let status = response.status();
+            let code = response_error_code(response_json(response).await);
+            assert!(
+                code == "scope_forbidden"
+                    || code.ends_with("_not_found")
+                    || status == StatusCode::NOT_FOUND,
+                "{path} => {status} {code}"
+            );
+        }
+
+        {
+            let persistence = state.persistence.lock();
+            let conn = persistence.connection_ref();
+            let all = OperatorScope::All;
+            let invoice = crate::slices::invoice_drafts::store::get_draft(
+                conn,
+                "test-client",
+                "inv_dana",
+                &all,
+            )
+            .expect("invoice")
+            .expect("invoice");
+            assert_eq!(invoice.draft.status, InvoiceDraftStatus::Staged);
+            assert_eq!(invoice.draft.customer_name, "Dana Co");
+            let ledger = crate::slices::ledger_drafts::store::get_draft(
+                conn,
+                "test-client",
+                "led_dana",
+                &all,
+            )
+            .expect("ledger")
+            .expect("ledger");
+            assert_eq!(ledger.draft.status, LedgerDraftStatus::Staged);
+            assert_eq!(ledger.draft.payer_name, "Dana Co");
+            let record = crate::slices::crm_record_drafts::store::get_draft(
+                conn,
+                "test-client",
+                "crd_dana",
+                &all,
+            )
+            .expect("record")
+            .expect("record");
+            assert_eq!(record.draft.status, CrmRecordDraftStatus::Staged);
+            assert_eq!(record.draft.company_name.as_deref(), Some("Dana Co"));
+        }
     }
 
     fn json_string_set(value: &serde_json::Value, pointer: &str, field: &str) -> Vec<String> {
@@ -2499,7 +2938,14 @@ mod tests {
     async fn liveness_probes_are_plain_ok_not_spa_html() {
         let router = build_router(test_state_configured(None, &[]));
 
-        for path in ["/livez", "/livez/", "/health", "/health/", "/healthz", "/healthz/"] {
+        for path in [
+            "/livez",
+            "/livez/",
+            "/health",
+            "/health/",
+            "/healthz",
+            "/healthz/",
+        ] {
             let response = router
                 .clone()
                 .oneshot(

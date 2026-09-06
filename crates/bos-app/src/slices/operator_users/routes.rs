@@ -50,7 +50,7 @@ async fn users_list(
     Query(query): Query<UsersListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(denied) = state.require_operator(&headers) {
+    if let Err(denied) = state.require_all_scope(&headers) {
         return *denied;
     }
     let persistence = state.persistence.lock();
@@ -73,6 +73,9 @@ async fn user_create(
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
+    if let Err(denied) = auth.require_all_scope() {
+        return *denied;
+    }
     if request.idempotency_key.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }
@@ -122,6 +125,9 @@ async fn user_action(
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
+    if let Err(denied) = auth.require_all_scope() {
+        return *denied;
+    }
     if request.idempotency_key.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }
@@ -172,6 +178,9 @@ async fn rotate_token(
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
+    if let Err(denied) = auth.require_all_scope_or_self(&user_id) {
+        return *denied;
+    }
     if request.idempotency_key.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }
@@ -207,6 +216,9 @@ async fn set_default_calendar(
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
+    if let Err(denied) = auth.require_all_scope_or_self(&user_id) {
+        return *denied;
+    }
     if request.idempotency_key.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "idempotency_key_required");
     }

@@ -211,23 +211,6 @@ pub(crate) fn require_status_scoped<S: ScopedStatusDraftStore>(
     .ok_or_else(|| StoreError::Domain(S::NOT_FOUND.to_string()))
 }
 
-pub(crate) fn require_status_unscoped<S: DraftStore>(
-    conn: &Connection,
-    client_id: &str,
-    draft_id: &str,
-) -> Result<String, StoreError> {
-    conn.query_row(
-        &format!(
-            "SELECT status FROM {} WHERE client_id = ?1 AND draft_id = ?2",
-            S::TABLE
-        ),
-        params![client_id, draft_id],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or_else(|| StoreError::Domain(S::NOT_FOUND.to_string()))
-}
-
 pub(crate) struct DraftTableSpec {
     pub table: &'static str,
     pub entity_kind: &'static str,
