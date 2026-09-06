@@ -2524,6 +2524,57 @@ mod tests {
         }
     }
 
+
+    #[tokio::test]
+    async fn crm_approve_fails_closed_on_ownership_before_provider_config() {
+        // Invalid provider must not mask foreign-draft ownership denial.
+        let previous = std::env::var("BOS_CRM_PROVIDER").ok();
+        std::env::set_var("BOS_CRM_PROVIDER", "not-a-real-crm");
+        let state = test_state_configured(None, &[]);
+        seed_unscoped_draft_surfaces(&state);
+        let router = build_router(state.clone());
+        let response = json_request(
+            router,
+            axum::http::Method::POST,
+            "/api/crm-record-drafts/crd_dana/action",
+            Some("tok_jordan"),
+            Some(serde_json::json!({
+                "action": "approve",
+                "expected_revision": null,
+                "idempotency_key": "jordan_approve_dana_with_bad_provider",
+                "actor_id": "jordan"
+            })),
+        )
+        .await;
+        let status = response.status();
+        let code = response_error_code(response_json(response).await);
+        match previous {
+            Some(value) => std::env::set_var("BOS_CRM_PROVIDER", value),
+            None => std::env::remove_var("BOS_CRM_PROVIDER"),
+        }
+        assert_ne!(status, StatusCode::OK, "foreign approve must deny");
+        assert_ne!(
+            code, "crm_provider_invalid",
+            "ownership must fail closed before provider resolution, got {status} {code}"
+        );
+        assert!(
+            code == "scope_forbidden"
+                || code.ends_with("_not_found")
+                || status == StatusCode::NOT_FOUND,
+            "expected ownership denial, got {status} {code}"
+        );
+        let persistence = state.persistence.lock();
+        let record = crate::slices::crm_record_drafts::store::get_draft(
+            persistence.connection_ref(),
+            "test-client",
+            "crd_dana",
+            &OperatorScope::All,
+        )
+        .expect("get")
+        .expect("present");
+        assert_eq!(record.draft.status, CrmRecordDraftStatus::Staged);
+    }
+
     fn json_string_set(value: &serde_json::Value, pointer: &str, field: &str) -> Vec<String> {
         let mut ids: Vec<String> = value
             .pointer(pointer)
