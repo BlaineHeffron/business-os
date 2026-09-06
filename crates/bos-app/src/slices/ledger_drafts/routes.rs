@@ -146,6 +146,16 @@ async fn draft_action(
     };
     let outcome = match request.action {
         LedgerDraftActionKind::Approve => {
+            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
+                Ok(Some(found)) => found.draft,
+                Ok(None) => {
+                    return error_response(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "ledger_draft_not_found",
+                    )
+                }
+                Err(err) => return store_error_response(err),
+            };
             // Provider seam: Invoice Ninja records a receipt (ensure-chain);
             // QBO records a payment against the snapshot-matched invoice.
             let provider =
@@ -163,16 +173,6 @@ async fn draft_action(
                         )
                     }
                 };
-            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
-                Ok(Some(found)) => found.draft,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "ledger_draft_not_found",
-                    )
-                }
-                Err(err) => return store_error_response(err),
-            };
             let job = if provider == service::PROVIDER_QBO {
                 match service::build_qbo_approval_job(
                     conn,

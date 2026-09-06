@@ -2383,6 +2383,15 @@ mod tests {
                 }),
             ),
             (
+                "/api/invoice-drafts/inv_dana/action",
+                serde_json::json!({
+                    "action": "approve",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_approve_dana_invoice",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
                 "/api/invoice-drafts/inv_dana/enrich",
                 serde_json::json!({
                     "idempotency_key": "jordan_enrich_dana_invoice",
@@ -2408,6 +2417,15 @@ mod tests {
                     "action": "reject",
                     "expected_revision": null,
                     "idempotency_key": "jordan_reject_dana_ledger",
+                    "actor_id": "jordan"
+                }),
+            ),
+            (
+                "/api/ledger-drafts/led_dana/action",
+                serde_json::json!({
+                    "action": "approve",
+                    "expected_revision": null,
+                    "idempotency_key": "jordan_approve_dana_ledger",
                     "actor_id": "jordan"
                 }),
             ),

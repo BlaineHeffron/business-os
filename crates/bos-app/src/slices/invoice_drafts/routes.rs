@@ -245,6 +245,16 @@ async fn draft_action(
     };
     let outcome = match request.action {
         InvoiceDraftActionKind::Approve => {
+            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
+                Ok(Some(found)) => found.draft,
+                Ok(None) => {
+                    return error_response(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invoice_draft_not_found",
+                    )
+                }
+                Err(err) => return store_error_response(err),
+            };
             // Provider seam: the draft invoice is created in whichever
             // invoicing system BOS_ACCOUNTING_PROVIDER names. QBO has no
             // invoice-draft write here — refuse loudly rather than stage an
@@ -272,16 +282,6 @@ async fn draft_action(
                         "accounting_provider_not_writable",
                     )
                 }
-            };
-            let draft = match store::get_draft(conn, &state.client_id, &draft_id, &scope) {
-                Ok(Some(found)) => found.draft,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "invoice_draft_not_found",
-                    )
-                }
-                Err(err) => return store_error_response(err),
             };
             let built = if provider == service::PROVIDER_STRIPE {
                 service::build_approval_job(&draft, &actor_id, ctx.now_ms)
