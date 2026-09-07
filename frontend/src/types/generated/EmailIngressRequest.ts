@@ -3,6 +3,6 @@ import type { EmailIngressNestedMessage } from "./EmailIngressNestedMessage";
 
 /**
  * Authenticated webhook ingress for already-filtered email events.
- * Flat fields are the v1 contract; `message` accepts the Apps Script nested shape.
+ * Flat fields are the v1 contract; `message` accepts a nested message object.
  */
 export type EmailIngressRequest = { from: string | null, to: string | null, subject: string | null, threadId: string | null, messageId: string | null, snippet: string | null, body: string | null, receivedAt: string | null, ruleId: string | null, clientId: string | null, source: string | null, idempotencyKey: string | null, message: EmailIngressNestedMessage | null, };
