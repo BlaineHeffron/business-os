@@ -27,6 +27,7 @@ curl -sS -X POST "$BOS_URL/api/webhooks/email-ingress" \
     "source": "business-os.gmail-webhook-trigger",
     "version": 1,
     "receivedAt": "2026-09-07T15:00:00.000Z",
+    "query": "from:sineadpatience@me.com newer_than:14d -label:bos-webhooked",
     "message": {
       "messageId": "msg-1",
       "threadId": "thr-1",
@@ -41,26 +42,27 @@ curl -sS -X POST "$BOS_URL/api/webhooks/email-ingress" \
 
 ## Payload
 
-Nested Apps Script shape (issue #12 / PR #13) and a flat v1 shape are both accepted.
+Canonical body is the nested Apps Script shape from issue #12 / PR #13 (`examples/gmail-webhook-trigger/Code.gs` and `examples/email-ingress-webhook/Code.gs`). Extra fields (`version`, `query`) are ignored. Optional top-level `ruleId` / `clientId` / `body` are accepted alongside `snippet`.
 
 ```json
 {
-  "from": "Sinead <sineadpatience@me.com>",
-  "to": "optional",
-  "subject": "…",
-  "threadId": "optional",
-  "messageId": "optional",
-  "snippet": "…",
-  "body": "optional plain text",
-  "receivedAt": "ISO-8601 optional",
-  "ruleId": "optional — pins that triage rule's category",
-  "clientId": "optional — must match BOS_CLIENT_ID when set",
-  "source": "gmail-apps-script",
-  "idempotencyKey": "optional"
+  "source": "business-os.gmail-webhook-trigger",
+  "version": 1,
+  "receivedAt": "2026-09-07T15:00:00.000Z",
+  "query": "from:sineadpatience@me.com newer_than:14d -label:bos-webhooked",
+  "message": {
+    "messageId": "…",
+    "threadId": "…",
+    "from": "Sinead <sineadpatience@me.com>",
+    "to": "…",
+    "subject": "…",
+    "snippet": "…",
+    "date": "…"
+  }
 }
 ```
 
-`from` is required (`message.from` counts). Identity is `messageId`, else `idempotencyKey`, else a hash of from/subject/thread/snippet. Stored `source_key` is `webhook:<messageId>` so Gmail OAuth ingest of the same mailbox does not collide.
+A flat v1 shape (`from` / `subject` / `messageId` / `snippet` / `body` at the top level) is also accepted. `from` is required (`message.from` counts). Identity is `messageId`, else `idempotencyKey`, else a hash of from/subject/thread/snippet. Stored `source_key` is `webhook:<messageId>` so Gmail OAuth ingest of the same mailbox does not collide.
 
 ## Pipeline
 
