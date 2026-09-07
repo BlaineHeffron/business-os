@@ -312,6 +312,7 @@ Operator-managed deterministic rules that classify inbound email into input cate
 | POST | `/api/email-triage/inbox/{message_id}/follow-up` | Manually add a follow-up task packet kind for one inbound email |
 | POST | `/api/email-triage/inbox/{message_id}/trash` | Explicitly dismiss local work and enqueue a gated Gmail Move to Trash effect |
 | POST | `/api/email-triage/inbox/{message_id}/attachments/{attachment_id}/evidence` | Stage one inbound email attachment into a per-session agent evidence directory |
+| POST | `/api/webhooks/email-ingress` | Authenticated inbound webhook that opens a work item without AI classification |
 | POST | `/api/email-triage/reclassify` | Re-run rules over all stored mail + backfill work items |
 | POST | `/api/email-triage/ai-retriage-reset` | Clear AI-triage verdicts (per message, stale, or all) so the pump re-examines old mail |
 | GET | `/api/email-triage/categories` | Operator-defined input categories (lazy-seeds defaults) |
@@ -705,6 +706,7 @@ Read models: work_queue_feed, work_queue_policies
 | `BOS_DRIVE_SYNC_INTERVAL_SECS` | `1800` | Seconds between Drive corpus sync pump cycles (min 300 — reference docs rarely need to be fresher). |
 | `BOS_EMAIL_ENRICHMENT_BACKFILL_BATCH` | `200` | Maximum stored inbound messages the email enrichment backfill will reprocess per cycle. |
 | `BOS_EMAIL_ENRICHMENT_BACKFILL_ENABLED` | — | Enable the bounded runtime backfill that re-runs configured inbound email parsers over stored mail. Off by default. |
+| `BOS_EMAIL_INGRESS_WEBHOOK_SECRET` | — | Shared secret required on POST /api/webhooks/email-ingress (Authorization: Bearer or X-Bos-Hook-Token). Unset = the webhook route 404s. Not an operator token. |
 | `BOS_EMAIL_TRIAGE_FACT_CACHE_TTL_SECS` | `21600` | Freshness window for cached email-triage provider facts. Positive CRM facts use this TTL; negative CRM facts use the smaller of this value and 1800 seconds. |
 | `BOS_EMAIL_TRIAGE_FACT_PROVIDER_BUDGET_PER_MESSAGE` | `2` | Maximum live CRM fact lookups the email-triage resolver may spend for one newly ingested message. Reclassify stays cache-only. |
 | `BOS_ENRICHMENT_FRESHNESS_ENABLED` | — | Run the enrichment freshness pump for stale critical staged-draft fields. Off by default. |

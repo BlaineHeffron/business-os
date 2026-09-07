@@ -1,7 +1,7 @@
 //! Thin HTTP handlers: parse, auth, call store/service, serialize.
 
 use super::store::{self, RuleAction, RuleMutationContext};
-use super::{catalog, service};
+use super::{catalog, ingress, service};
 use crate::http::{error_response, mutation_response, now_ms, AppState};
 use crate::store_core::StoreError;
 use axum::extract::{Path, Query, State};
@@ -12,7 +12,7 @@ use axum::{Json, Router};
 use bos_contracts::email_triage::{
     AiRetriageResetRequest, AiRetriageResetResponse, AiRetriageResetScope, CategoriesListResponse,
     CategoryDeleteRequest, CategoryUpsertRequest, EmailAttachmentEvidenceRequest,
-    EmailManualFollowUpRequest, EmailTrashRequest, EmailTriageDryRunRequest,
+    EmailIngressRequest, EmailManualFollowUpRequest, EmailTrashRequest, EmailTriageDryRunRequest,
     EmailTriageDryRunResponse, EmailTriageGmailCategory, EmailTriageInboxDefaults,
     EmailTriageInboxOptionsResponse, EmailTriageInboxResponse, EmailTriageInboxSettingsResponse,
     EmailTriageInboxSettingsUpdateRequest, EmailTriageRuleActionKind, EmailTriageRuleActionRequest,
@@ -63,6 +63,7 @@ struct InboxQuery {
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/webhooks/email-ingress", post(email_ingress))
         .route("/api/email-triage/rules", get(rules_list).post(rule_upsert))
         .route(
             "/api/email-triage/rules/{rule_id}/action",
@@ -104,6 +105,41 @@ pub fn router() -> Router<AppState> {
             "/api/email-triage/ai-retriage-reset",
             post(ai_retriage_reset),
         )
+}
+
+async fn email_ingress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<EmailIngressRequest>,
+) -> Response {
+    let Some(secret) = ingress::webhook_secret_from_env() else {
+        return error_response(StatusCode::NOT_FOUND, "route_not_found");
+    };
+    if let Err(code) = ingress::verify_hook_token(&headers, &secret) {
+        return error_response(StatusCode::UNAUTHORIZED, code);
+    }
+    let mut persistence = match state.persistence_or_busy() {
+        Ok(persistence) => persistence,
+        Err(denied) => return *denied,
+    };
+    match ingress::ingest(
+        persistence.connection(),
+        &state.client_id,
+        &state.work_queue_overlay,
+        &request,
+        now_ms(),
+    ) {
+        Ok(result) => {
+            let status = if result.duplicate {
+                StatusCode::OK
+            } else {
+                StatusCode::ACCEPTED
+            };
+            (status, Json(result)).into_response()
+        }
+        Err(ingress::IngressError::Store(err)) => store_error_response(err),
+        Err(err) => error_response(StatusCode::UNPROCESSABLE_ENTITY, err.code()),
+    }
 }
 
 async fn condition_catalog(State(state): State<AppState>, headers: HeaderMap) -> Response {

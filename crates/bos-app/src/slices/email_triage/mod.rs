@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod facts;
+pub mod ingress;
 pub mod legacy;
 pub mod routes;
 pub mod service;
@@ -85,6 +86,11 @@ pub const SLICE: SliceSpec = SliceSpec {
         },
         RouteSpec {
             method: "POST",
+            path: "/api/webhooks/email-ingress",
+            summary: "Authenticated inbound webhook that opens a work item without AI classification",
+        },
+        RouteSpec {
+            method: "POST",
             path: "/api/email-triage/reclassify",
             summary: "Re-run rules over all stored mail + backfill work items",
         },
@@ -120,6 +126,7 @@ pub const SLICE: SliceSpec = SliceSpec {
         "gmail_ingest_cursors",
     ],
     env_vars: &[
+        &env_registry::BOS_EMAIL_INGRESS_WEBHOOK_SECRET,
         &env_registry::BOS_GMAIL_INGEST_ENABLED,
         &env_registry::BOS_GMAIL_INGEST_INTERVAL_SECS,
         &env_registry::BOS_GMAIL_INGEST_QUERY,
