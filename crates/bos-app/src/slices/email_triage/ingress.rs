@@ -128,6 +128,11 @@ pub fn ingest(
         snippet.as_deref(),
     ])
     .unwrap_or_default();
+    let received_at = first_nonempty([
+        request.received_at.as_deref(),
+        nested.and_then(|m| m.date.as_deref()),
+    ]);
+    let internal_date_ms = received_at.as_deref().and_then(parse_rfc3339_ms);
     let message_id = first_nonempty([
         request.message_id.as_deref(),
         nested.and_then(|m| m.message_id.as_deref()),
@@ -139,6 +144,7 @@ pub fn ingest(
             subject.as_deref().unwrap_or(""),
             thread_id.as_deref().unwrap_or(""),
             snippet.as_deref().unwrap_or(""),
+            &body,
         )
     });
     let source_key = webhook_source_key(&message_id);
@@ -209,7 +215,7 @@ pub fn ingest(
         source_key: source_key.clone(),
         message_id: message_id.clone(),
         thread_id,
-        internal_date_ms: None,
+        internal_date_ms,
         from_addr: Some(from),
         to_addr: to,
         subject,
@@ -300,7 +306,13 @@ fn nonempty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn generated_message_id(from: &str, subject: &str, thread_id: &str, snippet: &str) -> String {
+fn generated_message_id(
+    from: &str,
+    subject: &str,
+    thread_id: &str,
+    snippet: &str,
+    body: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(from.as_bytes());
     hasher.update([0]);
@@ -309,12 +321,108 @@ fn generated_message_id(from: &str, subject: &str, thread_id: &str, snippet: &st
     hasher.update(thread_id.as_bytes());
     hasher.update([0]);
     hasher.update(snippet.as_bytes());
+    hasher.update([0]);
+    hasher.update(body.as_bytes());
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(16);
     for byte in digest.iter().take(8) {
         hex.push_str(&format!("{byte:02x}"));
     }
     format!("wh-{hex}")
+}
+
+/// Parse RFC3339 timestamps (`…Z` or `±HH:MM` offset) into unix milliseconds.
+/// Invalid or unsupported values are ignored so ingest still succeeds.
+fn parse_rfc3339_ms(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    let (datetime, offset_min) =
+        if let Some(prefix) = raw.strip_suffix('Z').or_else(|| raw.strip_suffix('z')) {
+            (prefix, 0_i32)
+        } else {
+            let split_at = raw.rfind(['+', '-']).filter(|&i| i >= 10)?;
+            let (prefix, offset) = raw.split_at(split_at);
+            (prefix, parse_offset_minutes(offset)?)
+        };
+    let (date, time) = datetime
+        .split_once('T')
+        .or_else(|| datetime.split_once('t'))?;
+    let mut date_parts = date.split('-');
+    let year: i32 = date_parts.next()?.parse().ok()?;
+    let month: u32 = date_parts.next()?.parse().ok()?;
+    let day: u32 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+    let (hms, frac) = match time.split_once('.') {
+        Some((hms, frac)) => (hms, Some(frac)),
+        None => (time, None),
+    };
+    let mut time_parts = hms.split(':');
+    let hour: u32 = time_parts.next()?.parse().ok()?;
+    let minute: u32 = time_parts.next()?.parse().ok()?;
+    let second: u32 = time_parts.next()?.parse().ok()?;
+    if time_parts.next().is_some()
+        || !(1..=12).contains(&month)
+        || day == 0
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let millis = match frac {
+        Some(frac) if frac.chars().all(|c| c.is_ascii_digit()) && !frac.is_empty() => {
+            let padded = format!("{frac}000");
+            padded.get(..3)?.parse::<i64>().ok()?
+        }
+        Some(_) => return None,
+        None => 0,
+    };
+    let days = days_from_civil(year, month, day)?;
+    Some(
+        days * 86_400_000
+            + i64::from(hour) * 3_600_000
+            + i64::from(minute) * 60_000
+            + i64::from(second) * 1_000
+            + millis
+            - i64::from(offset_min) * 60_000,
+    )
+}
+
+fn parse_offset_minutes(raw: &str) -> Option<i32> {
+    let (sign, rest) = match raw.as_bytes().first()? {
+        b'+' => (1_i32, &raw[1..]),
+        b'-' => (-1, &raw[1..]),
+        _ => return None,
+    };
+    let (hours, minutes) = if rest.len() == 4 && rest.as_bytes().iter().all(|b| b.is_ascii_digit())
+    {
+        (
+            rest[..2].parse::<i32>().ok()?,
+            rest[2..].parse::<i32>().ok()?,
+        )
+    } else {
+        let (h, m) = rest.split_once(':')?;
+        (h.parse().ok()?, m.parse().ok()?)
+    };
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    Some(sign * (hours * 60 + minutes))
+}
+
+/// Days since 1970-01-01 (Howard Hinnant civil calendar).
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || day == 0 || day > 31 {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = (y - era * 400) as u32;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(i64::from(era) * 146_097 + i64::from(doe) - 719_468)
 }
 
 #[cfg(test)]
@@ -389,6 +497,22 @@ mod tests {
             .to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
         (status, json)
+    }
+
+    #[test]
+    fn rfc3339_parses_utc_and_offset() {
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00.500Z"), Some(500));
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(parse_rfc3339_ms("1970-01-01T01:00:00+01:00"), Some(0));
+        assert_eq!(parse_rfc3339_ms("not-a-date"), None);
+    }
+
+    #[test]
+    fn generated_id_includes_body() {
+        let a = generated_message_id("a@x", "s", "t", "snip", "body-one");
+        let b = generated_message_id("a@x", "s", "t", "snip", "body-two");
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -571,6 +695,7 @@ mod tests {
             from: Some("Ada <ada@example.com>".into()),
             subject: Some("Unrelated".into()),
             message_id: Some("pin-1".into()),
+            received_at: Some("1970-01-01T00:00:01.000Z".into()),
             rule_id: Some("site_change".into()),
             ..Default::default()
         };
@@ -592,6 +717,7 @@ mod tests {
             &OperatorScope::All,
         )
         .expect("stored");
+        assert_eq!(stored[0].internal_date_ms, Some(1_000));
         assert_eq!(stored[0].ai_triage_status.as_deref(), Some(AI_SKIP_STATUS));
         assert!(
             store::list_unexamined_ai_suggestible(conn, CLIENT, 10)

@@ -55,7 +55,9 @@ Flat v1 JSON:
 
 A nested `message` object is also accepted (`message.from`, `message.messageId`, `message.subject`, `message.snippet`, `message.date`, …). Extra fields are ignored. Optional top-level `ruleId` / `clientId` / `body` work with either shape.
 
-`from` is required (`message.from` counts). Identity is `messageId`, else `idempotencyKey`, else a hash of from/subject/thread/snippet. Stored `source_key` is `webhook:<messageId>` so Gmail OAuth ingest of the same mailbox does not collide.
+`from` is required (`message.from` counts). Identity is `messageId`, else `idempotencyKey`, else a hash of from/subject/thread/snippet/body. Stored `source_key` is `webhook:<messageId>` so Gmail OAuth ingest of the same mailbox does not collide.
+
+`receivedAt` or nested `message.date` (RFC3339) is stored as `internal_date_ms` when it parses; otherwise the row uses `ingested_at_ms` only. Client mailbox scripts are not in this repository, so Apps Script `followRedirects` does not apply here.
 
 ## Pipeline
 
