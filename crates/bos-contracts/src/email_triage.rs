@@ -1032,7 +1032,7 @@ pub struct AiRetriageResetResponse {
 }
 
 /// Authenticated webhook ingress for already-filtered email events.
-/// Flat fields are the v1 contract; `message` accepts the Apps Script nested shape.
+/// Flat fields are the v1 contract; `message` accepts a nested message object.
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
