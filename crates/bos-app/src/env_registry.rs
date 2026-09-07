@@ -554,6 +554,16 @@ pub const BOS_EMAIL_ENRICHMENT_BACKFILL_ENABLED: EnvVar = EnvVar {
     aliases: &[],
 };
 
+pub const BOS_EMAIL_INGRESS_WEBHOOK_SECRET: EnvVar = EnvVar {
+    name: "BOS_EMAIL_INGRESS_WEBHOOK_SECRET",
+    description:
+        "Shared secret required on POST /api/webhooks/email-ingress (Authorization: Bearer or X-Bos-Hook-Token). Unset = the webhook route 404s. Not an operator token.",
+    group: EnvVarGroup::SecurityWebhooks,
+    secret: true,
+    default: None,
+    aliases: &[],
+};
+
 pub const BOS_EMAIL_TRIAGE_FACT_CACHE_TTL_SECS: EnvVar = EnvVar {
     name: "BOS_EMAIL_TRIAGE_FACT_CACHE_TTL_SECS",
     description: "Freshness window for cached email-triage provider facts. Positive CRM facts use this TTL; negative CRM facts use the smaller of this value and 1800 seconds.",
@@ -2030,6 +2040,7 @@ pub const ALL: &[&EnvVar] = &[
     &BOS_DRIVE_SYNC_INTERVAL_SECS,
     &BOS_EMAIL_ENRICHMENT_BACKFILL_BATCH,
     &BOS_EMAIL_ENRICHMENT_BACKFILL_ENABLED,
+    &BOS_EMAIL_INGRESS_WEBHOOK_SECRET,
     &BOS_EMAIL_TRIAGE_FACT_CACHE_TTL_SECS,
     &BOS_EMAIL_TRIAGE_FACT_PROVIDER_BUDGET_PER_MESSAGE,
     &BOS_ENRICHMENT_FRESHNESS_ENABLED,

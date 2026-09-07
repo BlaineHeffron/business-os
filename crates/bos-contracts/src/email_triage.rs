@@ -952,6 +952,32 @@ mod tests {
             Err(EmailTriageRuleValidationError::HeaderNameNotAllowed)
         );
     }
+
+    #[test]
+    fn email_ingress_accepts_flat_and_nested_camel_case() {
+        let flat: EmailIngressRequest = serde_json::from_str(
+            r#"{"from":"Ada <ada@example.com>","subject":"Site change","messageId":"m1"}"#,
+        )
+        .expect("flat");
+        assert_eq!(flat.from.as_deref(), Some("Ada <ada@example.com>"));
+        assert_eq!(flat.message_id.as_deref(), Some("m1"));
+
+        let nested: EmailIngressRequest = serde_json::from_str(
+            r#"{"source":"business-os.gmail-webhook-trigger","version":1,"message":{"messageId":"m2","from":"Ada <ada@example.com>","subject":"Ping","snippet":"hi"}}"#,
+        )
+        .expect("nested");
+        assert_eq!(
+            nested.source.as_deref(),
+            Some("business-os.gmail-webhook-trigger")
+        );
+        assert_eq!(
+            nested
+                .message
+                .as_ref()
+                .and_then(|m| m.message_id.as_deref()),
+            Some("m2")
+        );
+    }
 }
 
 /// Result of re-running the current rules over all stored inbound messages.
@@ -1003,4 +1029,52 @@ pub struct AiRetriageResetResponse {
     /// them, up to its per-cycle budget).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub reset: u64,
+}
+
+/// Authenticated webhook ingress for already-filtered email events.
+/// Flat fields are the v1 contract; `message` accepts the Apps Script nested shape.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EmailIngressRequest {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub subject: Option<String>,
+    pub thread_id: Option<String>,
+    pub message_id: Option<String>,
+    pub snippet: Option<String>,
+    pub body: Option<String>,
+    pub received_at: Option<String>,
+    pub rule_id: Option<String>,
+    pub client_id: Option<String>,
+    pub source: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub message: Option<EmailIngressNestedMessage>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EmailIngressNestedMessage {
+    pub message_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub subject: Option<String>,
+    pub snippet: Option<String>,
+    pub body: Option<String>,
+    pub date: Option<String>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailIngressResponse {
+    pub accepted: bool,
+    pub duplicate: bool,
+    pub source_key: String,
+    pub message_id: String,
+    pub item_id: Option<String>,
+    pub category_id: String,
+    pub matched_rule_id: Option<String>,
 }

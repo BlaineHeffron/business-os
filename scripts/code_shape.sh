@@ -117,6 +117,7 @@ if [ -d crates/bos-app/src/slices ]; then
     allowed_extra_slice_files="$(cat <<'EOF'
 email_triage/catalog.rs
 email_triage/facts.rs
+email_triage/ingress.rs
 email_triage/legacy.rs
 email_triage/subjects.rs
 enrichment/research.rs
