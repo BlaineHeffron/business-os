@@ -8,6 +8,7 @@ import type { SocialProposalStatus } from "../types/generated/SocialProposalStat
 import type { SocialProposalTargetInput } from "../types/generated/SocialProposalTargetInput";
 import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
 import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
+import type { SocialUtmParameters } from "../types/generated/SocialUtmParameters";
 
 type Notice = { kind: "success" | "error" | "conflict"; text: string } | null;
 
@@ -44,7 +45,27 @@ export function proposalListLabel(
   return destinationLabel(proposal.canonical_url) ?? "Ad-hoc post";
 }
 
-function targetInput(
+const EMPTY_UTM: SocialUtmParameters = {
+  source: null,
+  medium: null,
+  campaign: null,
+  content: null,
+};
+
+function destinationPresent(url: string | null | undefined): boolean {
+  return Boolean(url?.trim());
+}
+
+function defaultUtm(platform: string): SocialUtmParameters {
+  return {
+    source: platform,
+    medium: "social",
+    campaign: "blog",
+    content: null,
+  };
+}
+
+export function targetInput(
   channel: SocialPublishingChannel,
   source?: SocialPublishedSource,
 ): SocialProposalTargetInput {
@@ -55,12 +76,9 @@ function targetInput(
     channel_id: channel.channel_id,
     text,
     image_url: null,
-    utm: {
-      source: channel.platform,
-      medium: "social",
-      campaign: "blog",
-      content: null,
-    },
+    utm: destinationPresent(source?.canonical_url)
+      ? defaultUtm(channel.platform)
+      : { ...EMPTY_UTM },
     schedule_mode: "queue",
     due_at: null,
   };
@@ -80,7 +98,10 @@ function rfc3339Value(value: string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-export function targetRequest(target: SocialProposalTargetInput): SocialProposalTargetInput {
+export function targetRequest(
+  target: SocialProposalTargetInput,
+  hasDestination = true,
+): SocialProposalTargetInput {
   return {
     channel_id: target.channel_id,
     text: target.text,
@@ -90,12 +111,14 @@ export function targetRequest(target: SocialProposalTargetInput): SocialProposal
       target.schedule_mode === "scheduled"
         ? rfc3339Value(target.due_at ?? "")
         : null,
-    utm: {
-      source: target.utm.source?.trim() || null,
-      medium: target.utm.medium?.trim() || null,
-      campaign: target.utm.campaign?.trim() || null,
-      content: target.utm.content?.trim() || null,
-    },
+    utm: hasDestination
+      ? {
+          source: target.utm.source?.trim() || null,
+          medium: target.utm.medium?.trim() || null,
+          campaign: target.utm.campaign?.trim() || null,
+          content: target.utm.content?.trim() || null,
+        }
+      : { ...EMPTY_UTM },
   };
 }
 
@@ -250,6 +273,29 @@ export default function SocialPublishing({
     setTargets(channels.map((channel) => targetInput(channel, source)));
   };
 
+  const applyDestinationUrl = (next: string) => {
+    const hadUrl = destinationPresent(canonicalUrl);
+    const hasUrl = destinationPresent(next);
+    setCanonicalUrl(next);
+    if (hadUrl === hasUrl) return;
+    setTargets((current) =>
+      current.map((target) => {
+        if (!hasUrl) return { ...target, utm: { ...EMPTY_UTM } };
+        const alreadySet = Boolean(
+          target.utm.source?.trim() ||
+            target.utm.medium?.trim() ||
+            target.utm.campaign?.trim() ||
+            target.utm.content?.trim(),
+        );
+        if (alreadySet) return target;
+        const platform =
+          channels.find((channel) => channel.channel_id === target.channel_id)
+            ?.platform ?? "social";
+        return { ...target, utm: defaultUtm(platform) };
+      }),
+    );
+  };
+
   const selectedSource = sources.find((source) => source.source_id === sourceId);
 
   const generate = async () => {
@@ -291,13 +337,17 @@ export default function SocialPublishing({
 
   const save = async () => {
     if (targets.some((target) => !target.text.trim())) return;
+    const hasDestination = destinationPresent(canonicalUrl);
+    const requestTargets = targets.map((target) =>
+      targetRequest(target, hasDestination),
+    );
     setBusy("save");
     setNotice(null);
     try {
       if (selected?.proposal.status === "staged") {
         await api.updateSocialProposal(selected.proposal.proposal_id, {
           canonical_url: canonicalUrl.trim(),
-          targets: targets.map(targetRequest),
+          targets: requestTargets,
           expected_revision: selected.revision,
           idempotency_key: crypto.randomUUID(),
           actor_id: null,
@@ -310,7 +360,7 @@ export default function SocialPublishing({
           source_content_draft_revision:
             selectedSource?.source_content_draft_revision ?? null,
           canonical_url: canonicalUrl.trim(),
-          targets: targets.map(targetRequest),
+          targets: requestTargets,
           idempotency_key: crypto.randomUUID(),
           actor_id: null,
         });
@@ -365,8 +415,10 @@ export default function SocialPublishing({
   const hasUnsavedChanges = Boolean(
     selected?.proposal.status === "staged" &&
       (canonicalUrl.trim() !== (selected.proposal.canonical_url ?? "") ||
-        JSON.stringify(targets.map(targetRequest)) !==
-          JSON.stringify(selected.proposal.targets.map(targetRequest))),
+        JSON.stringify(targets.map((target) => targetRequest(target))) !==
+          JSON.stringify(
+            selected.proposal.targets.map((target) => targetRequest(target)),
+          )),
   );
   const targetsReadyForProviders = targets.every((target) =>
     targetReadyForProvider(
@@ -568,7 +620,7 @@ export default function SocialPublishing({
                           : "Generate with AI"}
                     </Button>
                     <span className="text-xs text-zinc-400">
-                      BusinessOS sends published content and channel names to the routed typed
+                      BusinessOS sends source facts and channel names to the routed typed
                       transform. Approval remains here.
                     </span>
                     {selectedSource.generation_error ? (
@@ -583,7 +635,7 @@ export default function SocialPublishing({
                   <input
                     type="url"
                     value={canonicalUrl}
-                    onChange={(event) => setCanonicalUrl(event.target.value)}
+                    onChange={(event) => applyDestinationUrl(event.target.value)}
                     disabled={Boolean(sourceId)}
                     placeholder="https://example.com/blog/post"
                     className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30 disabled:opacity-60"
@@ -652,7 +704,7 @@ export default function SocialPublishing({
                         }
                         className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm leading-relaxed text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30"
                       />
-                      {googleBusiness ? (
+                      {googleBusiness && destinationPresent(canonicalUrl) ? (
                         <span className="mt-1 block font-normal text-zinc-400">
                           Keep the tracked URL in this copy. Google Business also
                           uses it on the Learn more button.
@@ -687,17 +739,23 @@ export default function SocialPublishing({
                           UTM {key}
                           <input
                             value={target.utm[key] ?? ""}
+                            disabled={!destinationPresent(canonicalUrl)}
                             onChange={(event) =>
                               patchTarget(target.channel_id, (current) => ({
                                 ...current,
                                 utm: { ...current.utm, [key]: event.target.value || null },
                               }))
                             }
-                            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30"
+                            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30 disabled:opacity-60"
                           />
                         </label>
                       ))}
                     </div>
+                    {!destinationPresent(canonicalUrl) ? (
+                      <p className="text-xs text-zinc-400">
+                        UTM parameters need a destination URL.
+                      </p>
+                    ) : null}
                     <div className="grid gap-2 sm:grid-cols-2">
                       <label className="text-xs font-medium text-zinc-400">
                         Scheduling
@@ -745,7 +803,9 @@ export default function SocialPublishing({
                     <dl className="grid gap-2 text-xs sm:grid-cols-2">
                       <div>
                         <dt className="text-zinc-400">Tracked URL</dt>
-                        <dd className="break-all text-zinc-300">{stored.tracked_url}</dd>
+                        <dd className="break-all text-zinc-300">
+                          {stored.tracked_url.trim() ? stored.tracked_url : "None"}
+                        </dd>
                       </div>
                       <div>
                         <dt className="text-zinc-400">Schedule</dt>

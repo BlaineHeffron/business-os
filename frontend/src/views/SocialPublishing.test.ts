@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SocialPostProposalWithRevision } from "../types/generated/SocialPostProposalWithRevision";
+import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
+import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
 import {
   nextSocialProposalId,
   proposalListLabel,
+  targetInput,
   targetReadyForProvider,
   targetRequest,
 } from "./SocialPublishing";
@@ -96,4 +99,68 @@ describe("proposal list labels", () => {
       ),
     ).toBe("Closed Christmas Day");
   });
+});
+
+describe("url-less target UTM", () => {
+  const channel: SocialPublishingChannel = {
+    channel_id: "channel-a",
+    name: "Company LinkedIn",
+    platform: "linkedin",
+  };
+  const emptyUtm = {
+    source: null,
+    medium: null,
+    campaign: null,
+    content: null,
+  };
+  const source = (canonical_url: string | null): SocialPublishedSource =>
+    ({
+      source_id: "src-1",
+      source_kind: "adhoc",
+      external_id: "adhoc-1",
+      title: "Closed Christmas Day",
+      canonical_url,
+      generation_status: "ready",
+      revision: 1,
+    }) as SocialPublishedSource;
+
+  it("does not seed UTM without a destination",
+    () => {
+      expect(targetInput(channel).utm).toEqual(emptyUtm);
+      expect(targetInput(channel, source(null)).utm).toEqual(emptyUtm);
+    },
+  );
+
+  it("seeds UTM when the source has a destination",
+    () => {
+      expect(
+        targetInput(channel, source("https://example.com/holiday-hours")).utm,
+      ).toEqual({
+        source: "linkedin",
+        medium: "social",
+        campaign: "blog",
+        content: null,
+      });
+    },
+  );
+
+  it("strips UTM in targetRequest when there is no destination",
+    () => {
+      const withUtm = {
+        channel_id: "channel-a",
+        text: "Closed December 25.",
+        image_url: null,
+        utm: {
+          source: "linkedin",
+          medium: "social",
+          campaign: "blog",
+          content: null,
+        },
+        schedule_mode: "queue" as const,
+        due_at: null,
+      };
+      expect(targetRequest(withUtm, false).utm).toEqual(emptyUtm);
+      expect(targetRequest(withUtm, true).utm).toEqual(withUtm.utm);
+    },
+  );
 });
