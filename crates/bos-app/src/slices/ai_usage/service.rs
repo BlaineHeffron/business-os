@@ -163,13 +163,16 @@ pub fn execute_tool_loop_recorded(
         .api_endpoint
         .clone()
         .unwrap_or_else(|| config.api_provider.default_endpoint().to_string());
-    let client = OpenAiCompatibleDirectLlmClient::new(OpenAiCompatibleDirectLlmConfig {
-        provider_id: provider_id.to_string(),
-        api_key: api_key.to_string(),
-        model: model.to_string(),
-        endpoint,
-        timeout_ms: config.timeout_ms,
-    })?;
+    let client = OpenAiCompatibleDirectLlmClient::new_with_schema_lookup(
+        OpenAiCompatibleDirectLlmConfig {
+            provider_id: provider_id.to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            endpoint,
+            timeout_ms: config.timeout_ms,
+        },
+        crate::llm::json_schema_for,
+    )?;
     let mut routed_request = request.clone();
     routed_request.execution_policy.default_route = TypedLlmExecutionRoute::DirectApi;
     if routed_request.spec.max_tokens == 0 {

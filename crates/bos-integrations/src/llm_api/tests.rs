@@ -347,21 +347,83 @@ fn direct_client_rejects_non_direct_route_before_transport() {
     assert_eq!(error.code(), "direct_llm_task_route_not_direct");
 }
 
+fn test_schema_lookup(schema_ref: &str) -> Option<serde_json::Value> {
+    (schema_ref == "email.triage_result.v1").then(|| {
+        json!({
+            "type": "object",
+            "required": ["confidence"],
+            "properties": {
+                "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+            }
+        })
+    })
+}
+
 #[test]
-fn direct_client_rejects_unsupported_response_format_before_transport() {
-    let fake = FakeTransport::default();
-    let client =
-        OpenAiCompatibleDirectLlmClient::with_transport(openrouter_config(), Box::new(fake));
+fn direct_client_sends_json_schema_and_embeds_schema_when_lookup_resolves() {
+    let fake = FakeTransport::with_responses(vec![Ok(success_response())]);
+    let captured = fake.requests.clone();
+    let client = OpenAiCompatibleDirectLlmClient::with_transport_and_lookup(
+        openrouter_config(),
+        Box::new(fake),
+        test_schema_lookup,
+    );
     let mut request = request();
     request.spec.response_format = TypedLlmResponseFormat::JsonSchema;
 
     let result = client.complete_typed_task(&request);
-    assert!(result.is_err());
-    let Err(error) = result else {
-        return;
+    assert!(result.is_ok(), "{result:?}");
+    let requests = match captured.lock() {
+        Ok(requests) => requests,
+        Err(error) => error.into_inner(),
     };
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).expect("body json");
+    assert_eq!(body["response_format"]["type"], "json_schema");
+    assert_eq!(
+        body["response_format"]["json_schema"]["name"],
+        "email_triage_result_v1"
+    );
+    assert_eq!(
+        body["response_format"]["json_schema"]["schema"]["properties"]["confidence"]["enum"],
+        json!(["high", "medium", "low"])
+    );
+    let system = body["messages"][0]["content"].as_str().expect("system");
+    assert!(system.contains("JSON schema:"));
+    assert!(system.contains("\"high\""));
+}
 
-    assert_eq!(error.code(), "direct_llm_response_format_unsupported");
+#[test]
+fn direct_client_falls_back_to_json_object_when_json_schema_is_rejected() {
+    let fake = FakeTransport::with_responses(vec![
+        Ok(DirectLlmTransportResponse {
+            status: 400,
+            headers: BTreeMap::new(),
+            body: "{\"error\":{\"message\":\"unknown response_format\"}}".to_string(),
+        }),
+        Ok(success_response()),
+    ]);
+    let captured = fake.requests.clone();
+    let client = OpenAiCompatibleDirectLlmClient::with_transport_and_lookup(
+        openrouter_config(),
+        Box::new(fake),
+        test_schema_lookup,
+    );
+
+    let result = client.complete_typed_task(&request());
+    assert!(result.is_ok(), "{result:?}");
+    let requests = match captured.lock() {
+        Ok(requests) => requests,
+        Err(error) => error.into_inner(),
+    };
+    assert_eq!(requests.len(), 2);
+    let first: serde_json::Value = serde_json::from_str(&requests[0].body).expect("first");
+    let second: serde_json::Value = serde_json::from_str(&requests[1].body).expect("second");
+    assert_eq!(first["response_format"]["type"], "json_schema");
+    assert_eq!(second["response_format"]["type"], "json_object");
+    assert!(second["response_format"].get("json_schema").is_none());
+    let system = second["messages"][0]["content"].as_str().expect("system");
+    assert!(system.contains("JSON schema:"));
 }
 
 #[test]

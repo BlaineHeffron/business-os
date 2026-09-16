@@ -29,6 +29,7 @@ use bos_integrations::llm_typed_tasks::{
     TypedLlmTaskRequest,
 };
 use bos_kernel::{AiCallUsageSink, AppError, AppResult, CorrelationId};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -402,16 +403,19 @@ fn execute_local_typed_task(
     };
     validate_local_endpoint(&config.local_endpoint)?;
     let request = sanitize_typed_task_request(request);
-    let client = OpenAiCompatibleDirectLlmClient::new(OpenAiCompatibleDirectLlmConfig {
-        provider_id: "local_openai_compatible".to_string(),
-        api_key: config
-            .local_api_key
-            .clone()
-            .unwrap_or_else(|| "local-no-auth".to_string()),
-        model: model.to_string(),
-        endpoint: config.local_endpoint.clone(),
-        timeout_ms: config.timeout_ms,
-    })?;
+    let client = OpenAiCompatibleDirectLlmClient::new_with_schema_lookup(
+        OpenAiCompatibleDirectLlmConfig {
+            provider_id: "local_openai_compatible".to_string(),
+            api_key: config
+                .local_api_key
+                .clone()
+                .unwrap_or_else(|| "local-no-auth".to_string()),
+            model: model.to_string(),
+            endpoint: config.local_endpoint.clone(),
+            timeout_ms: config.timeout_ms,
+        },
+        json_schema_for,
+    )?;
     client.complete_typed_task(&request)
 }
 
@@ -467,13 +471,16 @@ fn execute_api_typed_task(
     let request = sanitize_typed_task_request(request);
     match config.api_provider {
         LlmApiProvider::Anthropic => {
-            let client = AnthropicDirectLlmClient::new(AnthropicDirectLlmConfig {
-                provider_id: "anthropic".to_string(),
-                api_key: api_key.to_string(),
-                model: model.to_string(),
-                endpoint,
-                timeout_ms: config.timeout_ms,
-            })?;
+            let client = AnthropicDirectLlmClient::new_with_schema_lookup(
+                AnthropicDirectLlmConfig {
+                    provider_id: "anthropic".to_string(),
+                    api_key: api_key.to_string(),
+                    model: model.to_string(),
+                    endpoint,
+                    timeout_ms: config.timeout_ms,
+                },
+                json_schema_for,
+            )?;
             client.complete_typed_task(&request)
         }
         LlmApiProvider::OpenAi | LlmApiProvider::OpenRouter => {
@@ -481,13 +488,16 @@ fn execute_api_typed_task(
                 LlmApiProvider::OpenAi => "openai",
                 _ => "openrouter",
             };
-            let client = OpenAiCompatibleDirectLlmClient::new(OpenAiCompatibleDirectLlmConfig {
-                provider_id: provider_id.to_string(),
-                api_key: api_key.to_string(),
-                model: model.to_string(),
-                endpoint,
-                timeout_ms: config.timeout_ms,
-            })?;
+            let client = OpenAiCompatibleDirectLlmClient::new_with_schema_lookup(
+                OpenAiCompatibleDirectLlmConfig {
+                    provider_id: provider_id.to_string(),
+                    api_key: api_key.to_string(),
+                    model: model.to_string(),
+                    endpoint,
+                    timeout_ms: config.timeout_ms,
+                },
+                json_schema_for,
+            )?;
             client.complete_typed_task(&request)
         }
     }
@@ -518,7 +528,7 @@ fn execute_harness_backend_typed_task(
         model: routed_model,
         thinking_level: config.harness_thinking_level.clone(),
         result_root: config.harness_result_root.clone(),
-        schema_lookup: None,
+        schema_lookup: Some(json_schema_for),
     };
     let backend = TmuxCliSessionBackend;
     let runner = TmuxHarnessTypedTaskRunner::new(&backend);
@@ -618,37 +628,44 @@ struct OutputSchemaSpec {
     /// slice would accept.
     required_fields: &'static [&'static str],
     max_elements: usize,
+    json_schema: fn() -> Value,
 }
 
 /// Every schema a produce/classify transform may emit. Adding a vertical
 /// means registering its schema ref here — an unregistered ref is an error,
-/// not a pass-through.
+/// not a pass-through. `json_schema` is the generation contract sent to the
+/// model; acceptance stays presence-only so slice parse remains the semantic gate.
 const OUTPUT_SCHEMA_REGISTRY: &[OutputSchemaSpec] = &[
     OutputSchemaSpec {
         schema_ref: crate::slices::email_triage::service::AI_TRIAGE_SCHEMA_REF,
         required_fields: &["suggested_packet_kinds", "confidence"],
         max_elements: 2_000,
+        json_schema: email_triage_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::packet_proposals::service::PROPOSAL_SCHEMA_REF,
         required_fields: &["confidence", "outcomes"],
         max_elements: 8_000,
+        json_schema: packet_proposal_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::follow_up_tasks::service::FILL_SCHEMA_REF,
         required_fields: &["title", "confidence"],
         max_elements: 2_000,
+        json_schema: follow_up_fill_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::calendar_drafts::service::EXTRACT_SCHEMA_REF,
         // extractable=false responses legitimately omit every other field.
         required_fields: &["extractable"],
         max_elements: 2_000,
+        json_schema: calendar_extract_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::crm_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["note_body", "confidence"],
         max_elements: 2_000,
+        json_schema: crm_note_fill_schema,
     },
     OutputSchemaSpec {
         // company/contact may legitimately be absent; only confidence is
@@ -656,6 +673,7 @@ const OUTPUT_SCHEMA_REGISTRY: &[OutputSchemaSpec] = &[
         schema_ref: crate::slices::crm_record_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["confidence"],
         max_elements: 2_000,
+        json_schema: confidence_only_schema,
     },
     OutputSchemaSpec {
         // Every record field is optional (the gap-filler fills only what was
@@ -663,6 +681,7 @@ const OUTPUT_SCHEMA_REGISTRY: &[OutputSchemaSpec] = &[
         schema_ref: crate::slices::crm_record_drafts::service::ENRICH_SCHEMA_REF,
         required_fields: &["confidence"],
         max_elements: 2_000,
+        json_schema: confidence_only_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::crm_sales_intent::service::FILL_SCHEMA_REF,
@@ -673,53 +692,388 @@ const OUTPUT_SCHEMA_REGISTRY: &[OutputSchemaSpec] = &[
             "confidence",
         ],
         max_elements: 2_000,
+        json_schema: crm_sales_intent_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::email_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["body_text", "confidence"],
         max_elements: 2_000,
+        json_schema: email_draft_fill_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::ledger_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["payer_name", "amount_cents", "confidence"],
         max_elements: 2_000,
+        json_schema: ledger_fill_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::content_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["title", "body_markdown", "claims", "confidence"],
         max_elements: 2_000,
+        json_schema: content_draft_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::social_publishing::service::DRAFT_SCHEMA_REF,
         required_fields: &["targets", "confidence"],
         max_elements: 2_000,
+        json_schema: social_draft_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::claim_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["damage_narrative", "confidence"],
         max_elements: 2_000,
+        json_schema: claim_fill_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::owner_reports::service::NARRATION_SCHEMA_REF,
         required_fields: &["headline", "narrative", "confidence"],
         max_elements: 2_000,
+        json_schema: owner_narration_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::invoice_drafts::service::FILL_SCHEMA_REF,
         required_fields: &["customer_name", "line_items", "confidence"],
         max_elements: 2_000,
+        json_schema: invoice_fill_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::invoice_drafts::service::CUSTOMER_ENRICH_SCHEMA_REF,
         required_fields: &["confidence"],
         max_elements: 2_000,
+        json_schema: confidence_only_schema,
     },
     OutputSchemaSpec {
         schema_ref: crate::slices::enrichment::service::RESEARCH_ACTION_SCHEMA_REF,
         required_fields: &["action"],
         max_elements: 2_000,
+        json_schema: research_action_schema,
     },
 ];
+
+/// JSON Schema for a registered `schema_ref`, used as the generation contract.
+pub fn json_schema_for(schema_ref: &str) -> Option<Value> {
+    OUTPUT_SCHEMA_REGISTRY
+        .iter()
+        .find(|spec| spec.schema_ref == schema_ref)
+        .map(|spec| (spec.json_schema)())
+}
+
+fn grade() -> Value {
+    json!({"type": "string", "enum": ["high", "medium", "low"]})
+}
+
+fn string_type() -> Value {
+    json!({"type": "string"})
+}
+
+fn strings() -> Value {
+    json!({"type": "array", "items": {"type": "string"}})
+}
+
+fn provenance() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string"},
+                "quote": {"type": "string"}
+            }
+        }
+    })
+}
+
+fn object_schema(required: &[&str], properties: &[(&str, Value)]) -> Value {
+    let mut map = Map::new();
+    for (key, value) in properties {
+        map.insert((*key).to_string(), value.clone());
+    }
+    json!({
+        "type": "object",
+        "required": required,
+        "properties": map
+    })
+}
+
+fn email_triage_schema() -> Value {
+    object_schema(
+        &["suggested_packet_kinds", "confidence"],
+        &[
+            ("suggested_packet_kinds", strings()),
+            ("suggested_category", json!({"type": ["string", "null"]})),
+            ("confidence", grade()),
+            ("rationale", string_type()),
+        ],
+    )
+}
+
+fn packet_proposal_schema() -> Value {
+    object_schema(
+        &["confidence", "outcomes"],
+        &[
+            ("suggested_category", json!({"type": ["string", "null"]})),
+            ("confidence", grade()),
+            ("rationale", string_type()),
+            (
+                "outcomes",
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["packet_kind", "status"],
+                        "properties": {
+                            "packet_kind": {"type": "string"},
+                            "status": {"type": "string", "enum": ["drafted", "unavailable"]},
+                            "reason_code": {"type": "string"},
+                            "draft": {"type": "object"}
+                        }
+                    }
+                }),
+            ),
+        ],
+    )
+}
+
+fn follow_up_fill_schema() -> Value {
+    object_schema(
+        &["title", "confidence"],
+        &[
+            ("title", string_type()),
+            ("due_date", json!({"type": ["string", "null"]})),
+            ("context", string_type()),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn calendar_extract_schema() -> Value {
+    object_schema(
+        &["extractable"],
+        &[
+            ("extractable", json!({"type": "boolean"})),
+            ("reason", string_type()),
+            ("title", string_type()),
+            ("start_at", string_type()),
+            ("end_at", string_type()),
+            ("timezone", json!({"type": ["string", "null"]})),
+            ("location", json!({"type": ["string", "null"]})),
+            ("description", json!({"type": ["string", "null"]})),
+            (
+                "attendees",
+                json!({"type": "array", "items": {"type": "object"}}),
+            ),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn crm_note_fill_schema() -> Value {
+    object_schema(
+        &["note_body", "confidence"],
+        &[
+            ("note_body", string_type()),
+            ("contact_email", json!({"type": ["string", "null"]})),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn confidence_only_schema() -> Value {
+    object_schema(
+        &["confidence"],
+        &[("confidence", grade()), ("provenance", provenance())],
+    )
+}
+
+fn crm_sales_intent_schema() -> Value {
+    object_schema(
+        &[
+            "lead_title",
+            "intent_summary",
+            "next_step_text",
+            "confidence",
+        ],
+        &[
+            ("company_name", json!({"type": ["string", "null"]})),
+            ("contact_name", json!({"type": ["string", "null"]})),
+            ("contact_email", json!({"type": ["string", "null"]})),
+            ("lead_title", string_type()),
+            ("intent_summary", string_type()),
+            ("rationale", string_type()),
+            (
+                "qualification_status",
+                json!({"type": "string", "enum": ["qualified", "unqualified", "unknown"]}),
+            ),
+            ("next_step_text", string_type()),
+            ("follow_up_due_date", json!({"type": ["string", "null"]})),
+            (
+                "provider_target",
+                json!({"type": "string", "enum": ["lead", "deal", "task_only"]}),
+            ),
+            ("create_businessos_task", json!({"type": "boolean"})),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn email_draft_fill_schema() -> Value {
+    object_schema(
+        &["body_text", "confidence"],
+        &[
+            ("body_text", string_type()),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn ledger_fill_schema() -> Value {
+    object_schema(
+        &["payer_name", "amount_cents", "confidence"],
+        &[
+            ("payer_name", string_type()),
+            ("payer_email", json!({"type": ["string", "null"]})),
+            ("amount_cents", json!({"type": "integer"})),
+            ("paid_date", json!({"type": ["string", "null"]})),
+            ("description", string_type()),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn content_draft_schema() -> Value {
+    object_schema(
+        &["title", "body_markdown", "claims", "confidence"],
+        &[
+            ("title", string_type()),
+            ("body_markdown", string_type()),
+            ("target_query", json!({"type": ["string", "null"]})),
+            ("meta_description", json!({"type": ["string", "null"]})),
+            (
+                "claims",
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "snippet_ids": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                }),
+            ),
+            ("confidence", grade()),
+        ],
+    )
+}
+
+fn social_draft_schema() -> Value {
+    object_schema(
+        &["targets", "confidence"],
+        &[
+            (
+                "targets",
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "target_ref",
+                            "text",
+                            "utm_source",
+                            "utm_medium",
+                            "utm_campaign",
+                            "source_quotes"
+                        ],
+                        "properties": {
+                            "target_ref": {"type": "string"},
+                            "text": {"type": "string"},
+                            "utm_source": {"type": "string"},
+                            "utm_medium": {"type": "string"},
+                            "utm_campaign": {"type": "string"},
+                            "utm_content": {"type": ["string", "null"]},
+                            "source_quotes": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                }),
+            ),
+            ("confidence", grade()),
+        ],
+    )
+}
+
+fn claim_fill_schema() -> Value {
+    object_schema(
+        &["damage_narrative", "confidence"],
+        &[
+            ("damage_narrative", string_type()),
+            ("item_description", string_type()),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn owner_narration_schema() -> Value {
+    object_schema(
+        &["headline", "narrative", "confidence"],
+        &[
+            ("headline", string_type()),
+            ("narrative", string_type()),
+            ("callouts", strings()),
+            ("confidence", grade()),
+        ],
+    )
+}
+
+fn invoice_fill_schema() -> Value {
+    object_schema(
+        &["customer_name", "line_items", "confidence"],
+        &[
+            ("customer_name", string_type()),
+            ("customer_email", json!({"type": ["string", "null"]})),
+            (
+                "line_items",
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "line_number": {"type": "integer"},
+                            "label": {"type": "string"},
+                            "description": {"type": ["string", "null"]},
+                            "quantity": {"type": "integer"},
+                            "unit_amount_cents": {"type": "integer"}
+                        }
+                    }
+                }),
+            ),
+            ("due_date", json!({"type": ["string", "null"]})),
+            ("memo", string_type()),
+            ("confidence", grade()),
+            ("provenance", provenance()),
+        ],
+    )
+}
+
+fn research_action_schema() -> Value {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                json!({"type": "string", "enum": ["search", "fetch_pages", "finish"]}),
+            ),
+            ("query", string_type()),
+            ("urls", strings()),
+        ],
+    )
+}
 
 const OUTPUT_MAX_JSON_DEPTH: usize = 64;
 
@@ -1220,7 +1574,7 @@ mod tests {
 
 #[cfg(test)]
 mod output_validation_tests {
-    use super::validate_typed_task_output;
+    use super::{json_schema_for, validate_typed_task_output, OUTPUT_SCHEMA_REGISTRY};
     use serde_json::json;
 
     const LEDGER: &str = "bos.ledger_drafts.receipt_fill.v1";
@@ -1262,6 +1616,45 @@ mod output_validation_tests {
             validate_typed_task_output(schema_ref, &output)
                 .unwrap_or_else(|err| panic!("{schema_ref} should pass: {err:?}"));
         }
+    }
+
+    #[test]
+    fn json_schema_for_every_registry_entry_encodes_known_enums() {
+        for spec in OUTPUT_SCHEMA_REGISTRY {
+            let schema = json_schema_for(spec.schema_ref)
+                .unwrap_or_else(|| panic!("missing schema for {}", spec.schema_ref));
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["required"], json!(spec.required_fields));
+            if spec.required_fields.contains(&"confidence") {
+                assert_eq!(
+                    schema["properties"]["confidence"]["enum"],
+                    json!(["high", "medium", "low"]),
+                    "{}",
+                    spec.schema_ref
+                );
+            }
+        }
+        let social = json_schema_for(crate::slices::social_publishing::service::DRAFT_SCHEMA_REF)
+            .expect("social schema");
+        assert_eq!(
+            social["properties"]["targets"]["items"]["required"],
+            json!([
+                "target_ref",
+                "text",
+                "utm_source",
+                "utm_medium",
+                "utm_campaign",
+                "source_quotes"
+            ])
+        );
+        let research =
+            json_schema_for(crate::slices::enrichment::service::RESEARCH_ACTION_SCHEMA_REF)
+                .expect("research schema");
+        assert_eq!(
+            research["properties"]["action"]["enum"],
+            json!(["search", "fetch_pages", "finish"])
+        );
+        assert!(json_schema_for("bos.unknown.v1").is_none());
     }
 
     #[test]
