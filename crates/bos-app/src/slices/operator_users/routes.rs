@@ -41,6 +41,7 @@ async fn whoami(State(state): State<AppState>, headers: HeaderMap) -> Response {
     Json(WhoAmIResponse {
         actor_id: identity.actor_id,
         display_name: identity.display_name,
+        capabilities: identity.capabilities.as_strings(),
     })
     .into_response()
 }

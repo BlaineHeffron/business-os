@@ -14,6 +14,7 @@ fn shared_auth() -> AuthContext {
     let identity = OperatorIdentity {
         actor_id: crate::http::SHARED_OPERATOR_ACTOR.to_string(),
         display_name: "Operator".to_string(),
+        capabilities: crate::http::TokenCapabilities::Unscoped,
     };
     AuthContext {
         scope: identity.scope(),
@@ -26,6 +27,7 @@ fn user_auth(user_id: &str) -> AuthContext {
     let identity = OperatorIdentity {
         actor_id: user_id.to_string(),
         display_name: user_id.to_string(),
+        capabilities: crate::http::TokenCapabilities::Unscoped,
     };
     AuthContext {
         scope: identity.scope(),

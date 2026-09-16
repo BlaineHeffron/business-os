@@ -8,4 +8,8 @@ export type WhoAmIResponse = {
  * "operator" for the shared/env token or open dev mode; the user_id for
  * personal tokens.
  */
-actor_id: string, display_name: string, };
+actor_id: string, display_name: string,
+/**
+ * Exact grant on a scoped API token. Omitted for unscoped env/personal tokens.
+ */
+capabilities?: Array<string> | null, };

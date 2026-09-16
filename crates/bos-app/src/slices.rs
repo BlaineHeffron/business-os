@@ -41,6 +41,7 @@ pub mod lead_discovery;
 pub mod ledger_drafts;
 pub(crate) mod mutation_context;
 pub(crate) mod oauth_state;
+pub mod operator_api_tokens;
 pub mod operator_notes;
 pub mod operator_users;
 pub mod owner_reports;
@@ -108,6 +109,7 @@ pub fn registry() -> &'static [SliceSpec] {
         invoice_drafts::SLICE,
         lead_discovery::SLICE,
         ledger_drafts::SLICE,
+        operator_api_tokens::SLICE,
         operator_notes::SLICE,
         operator_users::SLICE,
         owner_reports::SLICE,

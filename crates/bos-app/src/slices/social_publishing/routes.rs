@@ -14,7 +14,7 @@ use bos_contracts::social_publishing::{
 };
 
 use super::{service, store};
-use crate::http::{mutation_response, now_ms, AppState};
+use crate::http::{mutation_response, now_ms, AppState, OperatorCapability};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -41,7 +41,9 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn proposals_list(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(denied) = state.require_operator(&headers) {
+    if let Err(denied) =
+        state.require_capability(&headers, OperatorCapability::SocialPublishingRead)
+    {
         return *denied;
     }
     let channels = match service::configured_channels() {
@@ -93,7 +95,7 @@ async fn proposal_stage(
     headers: HeaderMap,
     Json(request): Json<SocialProposalStageRequest>,
 ) -> Response {
-    let auth = match state.authenticate(&headers) {
+    let auth = match state.require_capability(&headers, OperatorCapability::SocialPublishingStage) {
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
@@ -118,7 +120,8 @@ async fn proposal_update(
     headers: HeaderMap,
     Json(request): Json<SocialProposalUpdateRequest>,
 ) -> Response {
-    let auth = match state.authenticate(&headers) {
+    let auth = match state.require_capability(&headers, OperatorCapability::SocialPublishingUpdate)
+    {
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
@@ -143,7 +146,8 @@ async fn proposal_action(
     headers: HeaderMap,
     Json(request): Json<SocialProposalActionRequest>,
 ) -> Response {
-    let auth = match state.authenticate(&headers) {
+    let auth = match state.require_capability(&headers, OperatorCapability::SocialPublishingApprove)
+    {
         Ok(auth) => auth,
         Err(denied) => return *denied,
     };
@@ -181,10 +185,11 @@ async fn source_generate(
     headers: HeaderMap,
     Json(request): Json<SocialProposalGenerateRequest>,
 ) -> Response {
-    let auth = match state.authenticate(&headers) {
-        Ok(auth) => auth,
-        Err(denied) => return *denied,
-    };
+    let auth =
+        match state.require_capability(&headers, OperatorCapability::SocialPublishingGenerate) {
+            Ok(auth) => auth,
+            Err(denied) => return *denied,
+        };
     let actor_id = auth.actor_or(request.actor_id.as_deref());
     match service::kickoff_generation(
         state,
@@ -210,10 +215,11 @@ async fn draft_preview_generate(
     headers: HeaderMap,
     Json(request): Json<SocialDraftPreviewGenerateRequest>,
 ) -> Response {
-    let auth = match state.authenticate(&headers) {
-        Ok(auth) => auth,
-        Err(denied) => return *denied,
-    };
+    let auth =
+        match state.require_capability(&headers, OperatorCapability::SocialPublishingGenerate) {
+            Ok(auth) => auth,
+            Err(denied) => return *denied,
+        };
     let actor_id = auth.actor_or(request.actor_id.as_deref());
     match service::kickoff_draft_preview_generation(state, &draft_id, &request, &actor_id) {
         Ok(service::GenerationKickoffOutcome::Accepted(source)) => (

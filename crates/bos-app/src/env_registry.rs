@@ -1598,7 +1598,7 @@ pub const BOS_ACCOUNTING_VISIBILITY_POLICY: EnvVar = EnvVar {
 
 pub const BOS_OPERATOR_TOKEN: EnvVar = EnvVar {
     name: "BOS_OPERATOR_TOKEN",
-    description: "Bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token.",
+    description: "Unscoped bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token. Mint scoped machine tokens via POST /api/operator-tokens for the Slack bridge and agent MCP.",
     group: EnvVarGroup::InfraServer,
     secret: true,
     default: None,

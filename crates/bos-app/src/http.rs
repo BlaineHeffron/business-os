@@ -3,7 +3,7 @@
 //! them. No business logic lives here.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::panic::PanicHookInfo;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock};
@@ -336,16 +336,17 @@ impl AppState {
         }
     }
 
-    /// Operator gate. Browser UI normally authenticates with the HttpOnly
-    /// session cookie; Bearer tokens remain supported for API/dev clients.
-    /// When BOS_OPERATOR_TOKEN is unset (local dev), open.
+    /// Unscoped operator gate. Browser UI normally authenticates with the
+    /// HttpOnly session cookie; Bearer tokens remain supported for API/dev
+    /// clients. When BOS_OPERATOR_TOKEN is unset (local dev), open.
+    /// Scoped API tokens are rejected here; routes that accept them call
+    /// [`Self::require_capability`].
     pub fn require_operator(&self, headers: &HeaderMap) -> Result<(), Box<Response>> {
-        self.authenticate_operator(headers).map(|_| ())
+        self.authenticate(headers).map(|_| ())
     }
 
     pub fn require_scope(&self, headers: &HeaderMap) -> Result<OperatorScope, Box<Response>> {
-        self.authenticate_operator(headers)
-            .map(|identity| identity.scope())
+        self.authenticate(headers).map(|auth| auth.scope)
     }
 
     pub fn require_all_scope(&self, headers: &HeaderMap) -> Result<(), Box<Response>> {
@@ -358,15 +359,22 @@ impl AppState {
         }
     }
 
+    /// Unscoped operator identity. Scoped API tokens are denied.
     pub fn authenticate(&self, headers: &HeaderMap) -> Result<AuthContext, Box<Response>> {
         let identity = self.authenticate_operator(headers)?;
-        let scope = identity.scope();
-        let actor_id = identity.actor_id.clone();
-        Ok(AuthContext {
-            identity,
-            scope,
-            actor_id,
-        })
+        identity.require_unscoped()?;
+        Ok(auth_context(identity))
+    }
+
+    /// Unscoped identity, or a scoped token that holds `capability`.
+    pub fn require_capability(
+        &self,
+        headers: &HeaderMap,
+        capability: OperatorCapability,
+    ) -> Result<AuthContext, Box<Response>> {
+        let identity = self.authenticate_operator(headers)?;
+        identity.require_capability(capability)?;
+        Ok(auth_context(identity))
     }
 
     pub fn authenticate_agent_mcp(
@@ -389,7 +397,11 @@ impl AppState {
         if bearer.is_none() && self.session_token_from_headers(headers)?.is_none() {
             return Err(denied());
         }
-        self.authenticate(headers)
+        let identity = self.authenticate_operator(headers)?;
+        if !identity.capabilities.allows_mcp_endpoint() {
+            return Err(capability_denied());
+        }
+        Ok(auth_context(identity))
     }
 
     fn operator_credentials_configured(&self) -> Result<bool, Box<Response>> {
@@ -397,17 +409,27 @@ impl AppState {
             return Ok(true);
         }
         let persistence = self.persistence_or_busy()?;
-        crate::slices::operator_users::store::any_active_token(
-            persistence.connection_ref(),
-            &self.client_id,
-        )
-        .map_err(|err| {
-            tracing::error!(error = %err, "operator credential lookup failed");
-            Box::new(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auth_lookup_failed",
-            ))
-        })
+        let conn = persistence.connection_ref();
+        match crate::slices::operator_users::store::any_active_token(conn, &self.client_id) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                crate::slices::operator_api_tokens::store::any_active_token(conn, &self.client_id)
+                    .map_err(|err| {
+                        tracing::error!(error = %err, "operator credential lookup failed");
+                        Box::new(error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "auth_lookup_failed",
+                        ))
+                    })
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "operator credential lookup failed");
+                Err(Box::new(error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "auth_lookup_failed",
+                )))
+            }
+        }
     }
 
     /// Operator gate that resolves WHO acts: the shared BOS_OPERATOR_TOKEN
@@ -462,8 +484,27 @@ impl AppState {
                     Ok(Some(user)) => Ok(OperatorIdentity {
                         actor_id: user.user_id,
                         display_name: user.display_name,
+                        capabilities: TokenCapabilities::Unscoped,
                     }),
-                    Ok(None) => Err(denied()),
+                    Ok(None) => {
+                        match crate::slices::operator_api_tokens::store::find_active_by_token_hash(
+                            persistence.connection_ref(),
+                            &self.client_id,
+                            &crate::slices::operator_api_tokens::store::token_hash(token),
+                        ) {
+                            Ok(Some(api_token)) => {
+                                OperatorIdentity::scoped(api_token.label, &api_token.capabilities)
+                            }
+                            Ok(None) => Err(denied()),
+                            Err(err) => {
+                                tracing::error!(error = %err, "operator api token lookup failed");
+                                Err(Box::new(error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "auth_lookup_failed",
+                                )))
+                            }
+                        }
+                    }
                     Err(err) => {
                         tracing::error!(error = %err, "operator token lookup failed");
                         Err(Box::new(error_response(
@@ -477,7 +518,8 @@ impl AppState {
     }
 
     pub fn create_operator_session_for_token(&self, token: &str) -> Result<String, Box<Response>> {
-        self.authenticate_presented_token(Some(token))?;
+        self.authenticate_presented_token(Some(token))?
+            .require_unscoped()?;
         let now = now_ms();
         Ok(signed_session_cookie_value(&self.client_id, token, now))
     }
@@ -606,39 +648,47 @@ impl AppState {
         query_token: Option<&str>,
     ) -> Result<OperatorIdentity, Box<Response>> {
         // An empty query token (open dev mode appends one) is "no token".
-        let Some(token) = query_token.map(str::trim).filter(|token| !token.is_empty()) else {
-            return self.authenticate_operator(headers);
-        };
-        if self.operator_token.as_deref() == Some(token) {
-            return Ok(OperatorIdentity::shared());
-        }
-        let lookup = {
-            let persistence = self.persistence_or_busy()?;
-            crate::slices::operator_users::store::find_active_by_token(
-                persistence.connection_ref(),
-                &self.client_id,
-                token,
-            )
-        };
-        match lookup {
-            Ok(Some(user)) => Ok(OperatorIdentity {
-                actor_id: user.user_id,
-                display_name: user.display_name,
-            }),
-            // A wrong query token never falls back to "open dev mode":
-            // presenting a credential means asking to be identified.
-            Ok(None) => Err(Box::new(error_response(
-                StatusCode::UNAUTHORIZED,
-                "operator_token_invalid",
-            ))),
-            Err(err) => {
-                tracing::error!(error = %err, "operator token lookup failed");
-                Err(Box::new(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "auth_lookup_failed",
-                )))
-            }
-        }
+        let identity =
+            if let Some(token) = query_token.map(str::trim).filter(|token| !token.is_empty()) {
+                if self.operator_token.as_deref() == Some(token) {
+                    OperatorIdentity::shared()
+                } else {
+                    let lookup = {
+                        let persistence = self.persistence_or_busy()?;
+                        crate::slices::operator_users::store::find_active_by_token(
+                            persistence.connection_ref(),
+                            &self.client_id,
+                            token,
+                        )
+                    };
+                    match lookup {
+                        Ok(Some(user)) => OperatorIdentity {
+                            actor_id: user.user_id,
+                            display_name: user.display_name,
+                            capabilities: TokenCapabilities::Unscoped,
+                        },
+                        // A wrong query token never falls back to "open dev mode":
+                        // presenting a credential means asking to be identified.
+                        Ok(None) => {
+                            return Err(Box::new(error_response(
+                                StatusCode::UNAUTHORIZED,
+                                "operator_token_invalid",
+                            )))
+                        }
+                        Err(err) => {
+                            tracing::error!(error = %err, "operator token lookup failed");
+                            return Err(Box::new(error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "auth_lookup_failed",
+                            )));
+                        }
+                    }
+                }
+            } else {
+                self.authenticate_operator(headers)?
+            };
+        identity.require_unscoped()?;
+        Ok(identity)
     }
 
     /// Register a single-use OAuth CSRF state bound to the user who initiated
@@ -955,12 +1005,81 @@ fn clear_session_cookie() -> HeaderValue {
 /// The anonymous actor for the shared BOS_OPERATOR_TOKEN / open dev mode.
 pub const SHARED_OPERATOR_ACTOR: &str = "operator";
 
+/// Explicit grant on a scoped machine token. Unscoped env/personal tokens
+/// allow every variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OperatorCapability {
+    SocialPublishingRead,
+    SocialPublishingUpdate,
+    SocialPublishingApprove,
+    SocialPublishingStage,
+    SocialPublishingGenerate,
+    AgentMcpIngest,
+}
+
+impl OperatorCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SocialPublishingRead => "social_publishing:read",
+            Self::SocialPublishingUpdate => "social_publishing:update",
+            Self::SocialPublishingApprove => "social_publishing:approve",
+            Self::SocialPublishingStage => "social_publishing:stage",
+            Self::SocialPublishingGenerate => "social_publishing:generate",
+            Self::AgentMcpIngest => "agent_mcp:ingest",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "social_publishing:read" => Some(Self::SocialPublishingRead),
+            "social_publishing:update" => Some(Self::SocialPublishingUpdate),
+            "social_publishing:approve" => Some(Self::SocialPublishingApprove),
+            "social_publishing:stage" => Some(Self::SocialPublishingStage),
+            "social_publishing:generate" => Some(Self::SocialPublishingGenerate),
+            "agent_mcp:ingest" => Some(Self::AgentMcpIngest),
+            _ => None,
+        }
+    }
+}
+
+/// Capability set carried by an authenticated operator credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenCapabilities {
+    Unscoped,
+    Scoped(BTreeSet<OperatorCapability>),
+}
+
+impl TokenCapabilities {
+    pub fn allows(&self, capability: OperatorCapability) -> bool {
+        match self {
+            Self::Unscoped => true,
+            Self::Scoped(set) => set.contains(&capability),
+        }
+    }
+
+    pub fn allows_mcp_endpoint(&self) -> bool {
+        self.allows(OperatorCapability::AgentMcpIngest)
+    }
+
+    pub fn is_unscoped(&self) -> bool {
+        matches!(self, Self::Unscoped)
+    }
+
+    pub fn as_strings(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Unscoped => None,
+            Self::Scoped(set) => Some(set.iter().map(|cap| cap.as_str().to_string()).collect()),
+        }
+    }
+}
+
 /// Who a request acts as, resolved from its bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorIdentity {
     /// "operator" (shared/open) or the operator_users user_id.
     pub actor_id: String,
     pub display_name: String,
+    pub capabilities: TokenCapabilities,
 }
 
 impl OperatorIdentity {
@@ -968,7 +1087,24 @@ impl OperatorIdentity {
         Self {
             actor_id: SHARED_OPERATOR_ACTOR.to_string(),
             display_name: "Operator".to_string(),
+            capabilities: TokenCapabilities::Unscoped,
         }
+    }
+
+    fn scoped(label: String, capabilities: &[String]) -> Result<Self, Box<Response>> {
+        let mut set = BTreeSet::new();
+        for raw in capabilities {
+            let Some(cap) = OperatorCapability::parse(raw) else {
+                tracing::error!(capability = %raw, "unknown stored operator capability");
+                return Err(capability_denied());
+            };
+            set.insert(cap);
+        }
+        Ok(Self {
+            actor_id: SHARED_OPERATOR_ACTOR.to_string(),
+            display_name: label,
+            capabilities: TokenCapabilities::Scoped(set),
+        })
     }
 
     pub fn scope(&self) -> OperatorScope {
@@ -977,6 +1113,32 @@ impl OperatorIdentity {
         } else {
             OperatorScope::User(self.actor_id.clone())
         }
+    }
+
+    pub fn require_unscoped(&self) -> Result<(), Box<Response>> {
+        if self.capabilities.is_unscoped() {
+            Ok(())
+        } else {
+            Err(capability_denied())
+        }
+    }
+
+    pub fn require_capability(&self, capability: OperatorCapability) -> Result<(), Box<Response>> {
+        if self.capabilities.allows(capability) {
+            Ok(())
+        } else {
+            Err(capability_denied())
+        }
+    }
+}
+
+fn auth_context(identity: OperatorIdentity) -> AuthContext {
+    let scope = identity.scope();
+    let actor_id = identity.actor_id.clone();
+    AuthContext {
+        identity,
+        scope,
+        actor_id,
     }
 }
 
@@ -1010,6 +1172,7 @@ impl AuthContext {
     }
 
     pub fn require_all_scope(&self) -> Result<(), Box<Response>> {
+        self.identity.require_unscoped()?;
         match &self.scope {
             OperatorScope::All => Ok(()),
             OperatorScope::User(_) => Err(scope_forbidden()),
@@ -1018,6 +1181,7 @@ impl AuthContext {
 
     /// Administration, or the named user acting on their own record.
     pub fn require_all_scope_or_self(&self, user_id: &str) -> Result<(), Box<Response>> {
+        self.identity.require_unscoped()?;
         match &self.scope {
             OperatorScope::All => Ok(()),
             OperatorScope::User(actor) if actor == user_id => Ok(()),
@@ -1030,6 +1194,13 @@ fn scope_forbidden() -> Box<Response> {
     Box::new(error_response(
         StatusCode::UNPROCESSABLE_ENTITY,
         "scope_forbidden",
+    ))
+}
+
+fn capability_denied() -> Box<Response> {
+    Box::new(error_response(
+        StatusCode::FORBIDDEN,
+        "operator_capability_denied",
     ))
 }
 
@@ -1333,6 +1504,10 @@ pub fn build_router(state: AppState) -> Router {
         (
             "ledger_drafts",
             crate::slices::ledger_drafts::routes::router(),
+        ),
+        (
+            "operator_api_tokens",
+            crate::slices::operator_api_tokens::routes::router(),
         ),
         (
             "operator_notes",
@@ -1759,6 +1934,7 @@ mod tests {
         let identity = OperatorIdentity {
             actor_id: "u1".to_string(),
             display_name: "User One".to_string(),
+            capabilities: TokenCapabilities::Unscoped,
         };
         assert_eq!(identity.scope(), OperatorScope::User("u1".to_string()));
     }
@@ -2523,7 +2699,6 @@ mod tests {
             assert_eq!(record.draft.company_name.as_deref(), Some("Dana Co"));
         }
     }
-
 
     #[tokio::test]
     async fn crm_approve_fails_closed_on_ownership_before_provider_config() {
