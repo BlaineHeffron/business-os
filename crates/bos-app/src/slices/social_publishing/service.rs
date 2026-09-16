@@ -62,6 +62,9 @@ const MAX_GENERATION_ATTEMPTS: u64 = 2;
 #[serde(deny_unknown_fields)]
 struct SocialDraftOutput {
     targets: Vec<SocialDraftTargetOutput>,
+    /// Grade is enforced before deserialize; the field stays so deny_unknown_fields
+    /// still accepts the key and missing confidence fails as output_invalid.
+    #[allow(dead_code)]
     confidence: String,
 }
 
@@ -1004,7 +1007,7 @@ pub fn build_social_draft_request(
         spec: TypedLlmTaskSpec {
             task_class: TypedLlmTaskClass::Draft,
             prompt_template_id: "social_campaign_draft".to_string(),
-            prompt_template_version: "1".to_string(),
+            prompt_template_version: "2".to_string(),
             prompt_template_hash: String::new(),
             schema_ref: DRAFT_SCHEMA_REF.to_string(),
             response_format: TypedLlmResponseFormat::JsonObject,
@@ -1070,6 +1073,8 @@ pub fn parse_social_draft_response(
     grounding: &str,
     destination_url: Option<&str>,
 ) -> Result<Vec<SocialProposalTargetInput>, String> {
+    // Reject a present non-grade before serde so numbers (and other non-strings)
+    // surface as social_draft_confidence_invalid instead of output_invalid.
     if let Some(confidence) = response.get("confidence") {
         if !matches!(confidence.as_str(), Some("high" | "medium" | "low")) {
             return Err("social_draft_confidence_invalid".to_string());
@@ -1077,9 +1082,6 @@ pub fn parse_social_draft_response(
     }
     let output: SocialDraftOutput = serde_json::from_value(response.clone())
         .map_err(|_| "social_draft_output_invalid".to_string())?;
-    if !matches!(output.confidence.as_str(), "high" | "medium" | "low") {
-        return Err("social_draft_confidence_invalid".to_string());
-    }
     let raw_targets = output
         .targets
         .len()
