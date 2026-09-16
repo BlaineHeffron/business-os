@@ -34,7 +34,7 @@ struct UsersListQuery {
 }
 
 async fn whoami(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let identity = match state.authenticate_operator(&headers) {
+    let identity = match state.resolve_operator(&headers) {
         Ok(identity) => identity,
         Err(denied) => return *denied,
     };

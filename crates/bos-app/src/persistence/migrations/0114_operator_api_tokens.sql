@@ -1,6 +1,7 @@
 -- Machine operator credentials with an explicit capability list. Secrets are
--- stored as a salted hash (never the bearer). Unscoped env/personal tokens
--- stay in BOS_OPERATOR_TOKEN / operator_users; this table is additive.
+-- stored as a domain-separated SHA-256 of the bearer (never the bearer
+-- itself). Unscoped env/personal tokens stay in BOS_OPERATOR_TOKEN /
+-- operator_users; this table is additive.
 CREATE TABLE operator_api_tokens (
     client_id TEXT NOT NULL,
     token_id TEXT NOT NULL,

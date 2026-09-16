@@ -361,9 +361,7 @@ impl AppState {
 
     /// Unscoped operator identity. Scoped API tokens are denied.
     pub fn authenticate(&self, headers: &HeaderMap) -> Result<AuthContext, Box<Response>> {
-        let identity = self.authenticate_operator(headers)?;
-        identity.require_unscoped()?;
-        Ok(auth_context(identity))
+        Ok(auth_context(self.authenticate_operator(headers)?))
     }
 
     /// Unscoped identity, or a scoped token that holds `capability`.
@@ -372,7 +370,7 @@ impl AppState {
         headers: &HeaderMap,
         capability: OperatorCapability,
     ) -> Result<AuthContext, Box<Response>> {
-        let identity = self.authenticate_operator(headers)?;
+        let identity = self.resolve_operator(headers)?;
         identity.require_capability(capability)?;
         Ok(auth_context(identity))
     }
@@ -397,7 +395,7 @@ impl AppState {
         if bearer.is_none() && self.session_token_from_headers(headers)?.is_none() {
             return Err(denied());
         }
-        let identity = self.authenticate_operator(headers)?;
+        let identity = self.resolve_operator(headers)?;
         if !identity.capabilities.allows_mcp_endpoint() {
             return Err(capability_denied());
         }
@@ -432,14 +430,24 @@ impl AppState {
         }
     }
 
-    /// Operator gate that resolves WHO acts: the shared BOS_OPERATOR_TOKEN
-    /// (or open dev mode) is the anonymous "operator"; a personal token
-    /// resolves to its user. Wrong/unknown tokens are rejected even in open
-    /// dev mode — presenting a credential means asking to be identified.
+    /// Unscoped operator identity. Handlers that call this (rather than
+    /// [`Self::require_capability`]) stay fail-closed for scoped tokens.
+    /// The shared BOS_OPERATOR_TOKEN (or open dev mode) is the anonymous
+    /// "operator"; a personal token resolves to its user. Wrong/unknown
+    /// tokens are rejected even in open dev mode — presenting a credential
+    /// means asking to be identified.
     pub fn authenticate_operator(
         &self,
         headers: &HeaderMap,
     ) -> Result<OperatorIdentity, Box<Response>> {
+        let identity = self.resolve_operator(headers)?;
+        identity.require_unscoped()?;
+        Ok(identity)
+    }
+
+    /// Any valid operator credential, including scoped API tokens.
+    /// Restricted to whoami and the capability-aware gates.
+    pub fn resolve_operator(&self, headers: &HeaderMap) -> Result<OperatorIdentity, Box<Response>> {
         let bearer = headers
             .get("authorization")
             .and_then(|value| value.to_str().ok())
@@ -492,9 +500,11 @@ impl AppState {
                             &self.client_id,
                             &crate::slices::operator_api_tokens::store::token_hash(token),
                         ) {
-                            Ok(Some(api_token)) => {
-                                OperatorIdentity::scoped(api_token.label, &api_token.capabilities)
-                            }
+                            Ok(Some(api_token)) => OperatorIdentity::scoped(
+                                api_token.token_id,
+                                api_token.label,
+                                &api_token.capabilities,
+                            ),
                             Ok(None) => Err(denied()),
                             Err(err) => {
                                 tracing::error!(error = %err, "operator api token lookup failed");
@@ -1076,7 +1086,8 @@ impl TokenCapabilities {
 /// Who a request acts as, resolved from its bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorIdentity {
-    /// "operator" (shared/open) or the operator_users user_id.
+    /// "operator" (shared/open), the operator_users user_id, or a scoped
+    /// API token's token_id.
     pub actor_id: String,
     pub display_name: String,
     pub capabilities: TokenCapabilities,
@@ -1091,7 +1102,11 @@ impl OperatorIdentity {
         }
     }
 
-    fn scoped(label: String, capabilities: &[String]) -> Result<Self, Box<Response>> {
+    fn scoped(
+        token_id: String,
+        label: String,
+        capabilities: &[String],
+    ) -> Result<Self, Box<Response>> {
         let mut set = BTreeSet::new();
         for raw in capabilities {
             let Some(cap) = OperatorCapability::parse(raw) else {
@@ -1101,17 +1116,19 @@ impl OperatorIdentity {
             set.insert(cap);
         }
         Ok(Self {
-            actor_id: SHARED_OPERATOR_ACTOR.to_string(),
+            actor_id: token_id,
             display_name: label,
             capabilities: TokenCapabilities::Scoped(set),
         })
     }
 
     pub fn scope(&self) -> OperatorScope {
-        if self.actor_id == SHARED_OPERATOR_ACTOR {
-            OperatorScope::All
-        } else {
-            OperatorScope::User(self.actor_id.clone())
+        match &self.capabilities {
+            TokenCapabilities::Scoped(_) => OperatorScope::All,
+            TokenCapabilities::Unscoped if self.actor_id == SHARED_OPERATOR_ACTOR => {
+                OperatorScope::All
+            }
+            TokenCapabilities::Unscoped => OperatorScope::User(self.actor_id.clone()),
         }
     }
 
@@ -1937,6 +1954,20 @@ mod tests {
             capabilities: TokenCapabilities::Unscoped,
         };
         assert_eq!(identity.scope(), OperatorScope::User("u1".to_string()));
+    }
+
+    #[test]
+    fn scoped_identity_uses_token_id_and_cannot_spoof_actor() {
+        let identity = OperatorIdentity::scoped(
+            "apitok_bridge".to_string(),
+            "Slack bridge".to_string(),
+            &["social_publishing:read".to_string()],
+        )
+        .expect("scoped");
+        assert_eq!(identity.actor_id, "apitok_bridge");
+        assert_eq!(identity.scope(), OperatorScope::All);
+        let auth = auth_context(identity);
+        assert_eq!(auth.actor_or(Some("forged-user")), "apitok_bridge");
     }
 
     #[test]

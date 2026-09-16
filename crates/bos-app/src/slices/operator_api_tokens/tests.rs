@@ -150,6 +150,9 @@ fn router_with_tokens() -> (axum::Router, crate::http::AppState) {
             "operator_notes",
             "social_publishing",
             "agent_mcp",
+            "home_dashboard",
+            "google_connector",
+            "customer_tier_sync",
         ],
     );
     {
@@ -271,6 +274,19 @@ async fn scoped_tokens_are_forbidden_outside_their_capabilities() {
             None,
         ),
         (AGENT_SECRET, Method::GET, "/api/operator-notes", None),
+        (BRIDGE_SECRET, Method::GET, "/api/home-dashboard", None),
+        (
+            BRIDGE_SECRET,
+            Method::GET,
+            "/api/connectors/google/status",
+            None,
+        ),
+        (
+            AGENT_SECRET,
+            Method::POST,
+            "/api/customer-tier-sync/preview",
+            Some(json!({ "idempotency_key": "tier-denied" })),
+        ),
     ];
     for (token, method, path, body) in denials {
         let (status, body_json) =
@@ -308,7 +324,7 @@ async fn bridge_token_can_list_social_proposals_and_whoami_exposes_capabilities(
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["actor_id"], "operator");
+    assert_eq!(body["actor_id"], "apitok_bridge");
     assert_eq!(body["display_name"], "Slack bridge");
     let caps = body["capabilities"]
         .as_array()

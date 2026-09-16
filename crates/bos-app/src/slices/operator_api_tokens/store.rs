@@ -21,7 +21,9 @@ pub fn token_hash(token: &str) -> String {
 
 fn token_from_row(row: &Row<'_>) -> rusqlite::Result<OperatorApiToken> {
     let capabilities_json: String = row.get(2)?;
-    let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+    let capabilities = serde_json::from_str(&capabilities_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
+    })?;
     Ok(OperatorApiToken {
         token_id: row.get(0)?,
         label: row.get(1)?,

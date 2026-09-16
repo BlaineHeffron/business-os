@@ -53,17 +53,19 @@ The `token` field is the bearer secret and is returned **once**. Put that value
 in the bridge or agent `BOS_OPERATOR_TOKEN` (or equivalent) environment; leave
 the server's unscoped `BOS_OPERATOR_TOKEN` for humans and the SPA.
 
-`GET /api/me` on a scoped token includes `capabilities`. Unscoped whoami omits
-the field.
+`GET /api/me` on a scoped token includes `capabilities` and uses the token id
+as `actor_id` (receipts cannot spoof a human operator). Unscoped whoami omits
+the capabilities field.
 
 Disable, revoke, and rotate live at `/api/operator-tokens/{token_id}/action`
 and `/api/operator-tokens/{token_id}/rotate-token`.
 
 ## Fail-closed defaults
 
-`require_operator` / `authenticate` still mean **unscoped**. Routes that accept
-a scoped token call `require_capability`. Forgetting to opt a new route in
-keeps it unreachable to the bridge and agent.
+`require_operator` / `authenticate` / `authenticate_operator` still mean
+**unscoped**. Routes that accept a scoped token call `require_capability`
+(or the MCP gate). Forgetting to opt a new route in keeps it unreachable to
+the bridge and agent.
 
 Scoped tokens cannot open a browser session, cannot mint further tokens, and
 cannot use OAuth query-token connect URLs.
