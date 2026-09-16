@@ -1,8 +1,8 @@
 {
   "repo": "BusinessOS frontend",
-  "sha": "9d8f8692d07c1151b8b648eb1dd8b56f2dc98032",
-  "generatedAt": "2026-08-26T22:40:45.555Z",
+  "sha": "60d72eb25dbd599381907a7c3093bd38f95963d6",
+  "generatedAt": "2026-09-16T20:54:30.207Z",
   "crapFail": 30,
   "crapAboveFail": 216,
-  "crapSumAboveFail": 75076.79
+  "crapSumAboveFail": 75350.21
 }

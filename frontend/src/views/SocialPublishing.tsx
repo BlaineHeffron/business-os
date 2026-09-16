@@ -98,6 +98,37 @@ function rfc3339Value(value: string): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function utmSet(utm: SocialUtmParameters): boolean {
+  return Boolean(
+    utm.source?.trim() ||
+      utm.medium?.trim() ||
+      utm.campaign?.trim() ||
+      utm.content?.trim(),
+  );
+}
+
+export function targetsForDestinationChange(
+  targets: SocialProposalTargetInput[],
+  channels: readonly SocialPublishingChannel[],
+  hadUrl: boolean,
+  hasUrl: boolean,
+): SocialProposalTargetInput[] {
+  if (hadUrl === hasUrl) return targets;
+  return targets.map((target) => {
+    if (!hasUrl) return { ...target, utm: { ...EMPTY_UTM } };
+    if (utmSet(target.utm)) return target;
+    const platform =
+      channels.find((channel) => channel.channel_id === target.channel_id)
+        ?.platform ?? "social";
+    return { ...target, utm: defaultUtm(platform) };
+  });
+}
+
+export function trackedUrlLabel(url: string | null | undefined): string {
+  const value = url?.trim();
+  return value ? value : "None";
+}
+
 export function targetRequest(
   target: SocialProposalTargetInput,
   hasDestination = true,
@@ -277,22 +308,8 @@ export default function SocialPublishing({
     const hadUrl = destinationPresent(canonicalUrl);
     const hasUrl = destinationPresent(next);
     setCanonicalUrl(next);
-    if (hadUrl === hasUrl) return;
     setTargets((current) =>
-      current.map((target) => {
-        if (!hasUrl) return { ...target, utm: { ...EMPTY_UTM } };
-        const alreadySet = Boolean(
-          target.utm.source?.trim() ||
-            target.utm.medium?.trim() ||
-            target.utm.campaign?.trim() ||
-            target.utm.content?.trim(),
-        );
-        if (alreadySet) return target;
-        const platform =
-          channels.find((channel) => channel.channel_id === target.channel_id)
-            ?.platform ?? "social";
-        return { ...target, utm: defaultUtm(platform) };
-      }),
+      targetsForDestinationChange(current, channels, hadUrl, hasUrl),
     );
   };
 
@@ -804,7 +821,7 @@ export default function SocialPublishing({
                       <div>
                         <dt className="text-zinc-400">Tracked URL</dt>
                         <dd className="break-all text-zinc-300">
-                          {stored.tracked_url.trim() ? stored.tracked_url : "None"}
+                          {trackedUrlLabel(stored.tracked_url)}
                         </dd>
                       </div>
                       <div>

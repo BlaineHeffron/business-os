@@ -8,6 +8,8 @@ import {
   targetInput,
   targetReadyForProvider,
   targetRequest,
+  targetsForDestinationChange,
+  trackedUrlLabel,
 } from "./SocialPublishing";
 
 function proposal(id: string): SocialPostProposalWithRevision {
@@ -163,4 +165,30 @@ describe("url-less target UTM", () => {
       expect(targetRequest(withUtm, true).utm).toEqual(withUtm.utm);
     },
   );
+
+  it("clears UTM when the destination is removed and seeds it when one is added", () => {
+    const withUtm = targetInput(channel, source("https://example.com/hours"));
+    const withoutUtm = targetInput(channel, source(null));
+    expect(
+      targetsForDestinationChange([withUtm], [channel], true, false)[0].utm,
+    ).toEqual(emptyUtm);
+    expect(
+      targetsForDestinationChange([withoutUtm], [channel], false, true)[0].utm,
+    ).toEqual({
+      source: "linkedin",
+      medium: "social",
+      campaign: "blog",
+      content: null,
+    });
+    expect(
+      targetsForDestinationChange([withUtm], [channel], true, true),
+    ).toEqual([withUtm]);
+  });
+
+  it("labels a missing tracked URL as none", () => {
+    expect(trackedUrlLabel("")).toBe("None");
+    expect(trackedUrlLabel("https://example.com/post")).toBe(
+      "https://example.com/post",
+    );
+  });
 });
