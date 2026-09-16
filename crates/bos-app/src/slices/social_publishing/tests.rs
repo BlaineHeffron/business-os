@@ -857,6 +857,128 @@ fn typed_fill_schema_refuses_unknown_and_malformed_output() {
         ),
         Err("social_draft_output_invalid".to_string())
     );
+    let valid_targets = json!([
+        {
+            "target_ref": "target_1",
+            "text": "Prepare concrete before the epoxy coating.",
+            "utm_source": "linkedin",
+            "utm_medium": "social",
+            "utm_campaign": "epoxy_guide",
+            "utm_content": "article",
+            "source_quotes": ["before epoxy coating"]
+        },
+        {
+            "target_ref": "target_2",
+            "text": "Diamond grinding removes weak concrete.",
+            "utm_source": "x",
+            "utm_medium": "social",
+            "utm_campaign": "epoxy_guide",
+            "utm_content": null,
+            "source_quotes": ["Diamond grinding removes weak concrete"]
+        }
+    ]);
+    let numeric = json!({
+        "targets": valid_targets,
+        "confidence": 0.93
+    });
+    assert_eq!(
+        service::parse_social_draft_response(
+            &numeric,
+            &channels,
+            grounding,
+            Some("https://example.com/blog/epoxy-guide"),
+        ),
+        Err("social_draft_confidence_invalid".to_string())
+    );
+    let unknown_grade = json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "Prepare concrete before the epoxy coating.",
+                "utm_source": "linkedin",
+                "utm_medium": "social",
+                "utm_campaign": "epoxy_guide",
+                "utm_content": "article",
+                "source_quotes": ["before epoxy coating"]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Diamond grinding removes weak concrete.",
+                "utm_source": "x",
+                "utm_medium": "social",
+                "utm_campaign": "epoxy_guide",
+                "utm_content": null,
+                "source_quotes": ["Diamond grinding removes weak concrete"]
+            }
+        ],
+        "confidence": "sure"
+    });
+    assert_eq!(
+        service::parse_social_draft_response(
+            &unknown_grade,
+            &channels,
+            grounding,
+            Some("https://example.com/blog/epoxy-guide"),
+        ),
+        Err("social_draft_confidence_invalid".to_string())
+    );
+}
+
+#[test]
+fn draft_instructions_state_confidence_enum_for_url_and_urlless_sources() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let channels = service::configured_channels().expect("channels");
+    let published = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &ingress_request("epoxy-guide", "ingress-confidence-url"),
+            1_000,
+        )
+        .expect("ingest")
+    };
+    let url_instructions = service::build_social_draft_request(
+        CLIENT,
+        &published,
+        &channels,
+        "grounding",
+        "run_url",
+        1,
+    )
+    .input
+    .json["instructions"]
+        .as_str()
+        .expect("instructions")
+        .to_string();
+    let adhoc = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_adhoc_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &adhoc_request("adhoc-confidence", None),
+            1_000,
+        )
+        .expect("ingest adhoc")
+    };
+    let urlless_instructions =
+        service::build_social_draft_request(CLIENT, &adhoc, &channels, "grounding", "run_adhoc", 1)
+            .input
+            .json["instructions"]
+            .as_str()
+            .expect("instructions")
+            .to_string();
+    let clause = r#"confidence must be exactly one of the strings "high", "medium", or "low""#;
+    assert!(url_instructions.contains(clause), "{url_instructions}");
+    assert!(
+        urlless_instructions.contains(clause),
+        "{urlless_instructions}"
+    );
 }
 
 fn wait_for_source_status(
