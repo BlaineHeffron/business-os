@@ -1052,10 +1052,15 @@ pub fn build_social_draft_request(
 }
 
 fn social_draft_instructions(source: &SocialPublishedSource) -> String {
+    let confidence = r#"confidence must be exactly one of the strings "high", "medium", or "low"."#;
     if source.canonical_url.is_none() {
-        "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Draft about those facts; do not treat SOURCE CONTENT as the finished post. Do not invent a destination URL. Return exactly {targets:[{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}],confidence}. Set utm_* to empty strings. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions.".to_string()
+        format!(
+            "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Draft about those facts; do not treat SOURCE CONTENT as the finished post. Do not invent a destination URL. Return exactly {{targets:[{{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}}],confidence}}. {confidence} Set utm_* to empty strings. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions."
+        )
     } else {
-        "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Return exactly {targets:[{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}],confidence}. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions.".to_string()
+        format!(
+            "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Return exactly {{targets:[{{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}}],confidence}}. {confidence} source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions."
+        )
     }
 }
 
@@ -1065,6 +1070,11 @@ pub fn parse_social_draft_response(
     grounding: &str,
     destination_url: Option<&str>,
 ) -> Result<Vec<SocialProposalTargetInput>, String> {
+    if let Some(confidence) = response.get("confidence") {
+        if !matches!(confidence.as_str(), Some("high" | "medium" | "low")) {
+            return Err("social_draft_confidence_invalid".to_string());
+        }
+    }
     let output: SocialDraftOutput = serde_json::from_value(response.clone())
         .map_err(|_| "social_draft_output_invalid".to_string())?;
     if !matches!(output.confidence.as_str(), "high" | "medium" | "low") {
