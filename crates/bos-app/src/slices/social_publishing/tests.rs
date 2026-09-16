@@ -891,26 +891,7 @@ fn typed_fill_schema_refuses_unknown_and_malformed_output() {
         Err("social_draft_confidence_invalid".to_string())
     );
     let unknown_grade = json!({
-        "targets": [
-            {
-                "target_ref": "target_1",
-                "text": "Prepare concrete before the epoxy coating.",
-                "utm_source": "linkedin",
-                "utm_medium": "social",
-                "utm_campaign": "epoxy_guide",
-                "utm_content": "article",
-                "source_quotes": ["before epoxy coating"]
-            },
-            {
-                "target_ref": "target_2",
-                "text": "Diamond grinding removes weak concrete.",
-                "utm_source": "x",
-                "utm_medium": "social",
-                "utm_campaign": "epoxy_guide",
-                "utm_content": null,
-                "source_quotes": ["Diamond grinding removes weak concrete"]
-            }
-        ],
+        "targets": valid_targets,
         "confidence": "sure"
     });
     assert_eq!(
@@ -941,16 +922,16 @@ fn draft_instructions_state_confidence_enum_for_url_and_urlless_sources() {
         )
         .expect("ingest")
     };
-    let url_instructions = service::build_social_draft_request(
+    let url_request = service::build_social_draft_request(
         CLIENT,
         &published,
         &channels,
         "grounding",
         "run_url",
         1,
-    )
-    .input
-    .json["instructions"]
+    );
+    assert_eq!(url_request.spec.prompt_template_version, "2");
+    let url_instructions = url_request.input.json["instructions"]
         .as_str()
         .expect("instructions")
         .to_string();
