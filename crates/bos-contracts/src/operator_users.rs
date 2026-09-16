@@ -130,4 +130,7 @@ pub struct WhoAmIResponse {
     /// personal tokens.
     pub actor_id: String,
     pub display_name: String,
+    /// Exact grant on a scoped API token. Omitted for unscoped env/personal tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
 }

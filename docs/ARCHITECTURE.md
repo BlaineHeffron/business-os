@@ -42,3 +42,7 @@ The environment registry in `bos-app` defines runtime settings.
 The default settings bind the server to the local host and disable provider writes.
 
 Keep credentials and client overlays outside this repository.
+
+Machine callers that only need social publishing or agent MCP ingest should
+hold a scoped API token (`docs/SCOPED_OPERATOR_TOKENS.md`) rather than the
+shared `BOS_OPERATOR_TOKEN`.

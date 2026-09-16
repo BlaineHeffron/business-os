@@ -467,6 +467,10 @@ const MIGRATION_SOURCES: &[(&str, &str)] = &[
         "0113_draft_source_user",
         include_str!("persistence/migrations/0113_draft_source_user.sql"),
     ),
+    (
+        "0114_operator_api_tokens",
+        include_str!("persistence/migrations/0114_operator_api_tokens.sql"),
+    ),
 ];
 
 fn migrations() -> Migrations<'static> {

@@ -36,6 +36,7 @@ pub mod lead_discovery;
 pub mod ledger_drafts;
 pub mod llm_settings;
 pub mod mutation;
+pub mod operator_api_tokens;
 pub mod operator_notes;
 pub mod operator_users;
 pub mod outbox;

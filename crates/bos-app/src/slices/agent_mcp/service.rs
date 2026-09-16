@@ -9,7 +9,9 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::http::{now_ms, AppState, AuthContext, OperatorScope};
+use crate::http::{
+    now_ms, AppState, AuthContext, OperatorCapability, OperatorScope, TokenCapabilities,
+};
 use crate::store_core::StoreError;
 
 const SERVER_NAME: &str = "businessos";
@@ -67,7 +69,7 @@ pub fn manifest(state: &AppState) -> Value {
         "authorization": "operator_bearer_token",
         "injection": "explicit_bos_context_only",
         "approval_model": "Tools may read local BOS context, create notes/work-queue artifacts, and stage drafts. They cannot approve drafts, send email, publish content, or write to providers.",
-        "tools": tools_for_state(state),
+        "tools": tools_for_state(state, &TokenCapabilities::Unscoped),
     })
 }
 
@@ -138,7 +140,7 @@ pub fn handle_request(state: AppState, auth: AuthContext, message: Value) -> Mcp
         "notifications/initialized" if !stateless => return McpHttpResponse::Accepted,
         "tools/list" => jsonrpc_result(
             id,
-            json!({ "tools": tools_for_state(&state) }),
+            json!({ "tools": tools_for_state(&state, &auth.identity.capabilities) }),
             stateless,
             cacheable,
         ),
@@ -250,7 +252,7 @@ pub fn validate_http_request(headers: &HeaderMap, message: &Value) -> Option<Val
     None
 }
 
-fn tools_for_state(state: &AppState) -> Vec<Value> {
+fn tools_for_state(state: &AppState, capabilities: &TokenCapabilities) -> Vec<Value> {
     let mut tools = vec![
         tool(
             "bos_work_queue_list",
@@ -396,7 +398,22 @@ fn tools_for_state(state: &AppState) -> Vec<Value> {
             }),
         ));
     }
+    tools.retain(|tool| {
+        mcp_tool_allowed(
+            tool.get("name").and_then(Value::as_str).unwrap_or(""),
+            capabilities,
+        )
+    });
     tools
+}
+
+fn mcp_tool_allowed(name: &str, capabilities: &TokenCapabilities) -> bool {
+    match name {
+        "bos_social_published_content_ingest" => {
+            capabilities.allows(OperatorCapability::AgentMcpIngest)
+        }
+        _ => capabilities.is_unscoped(),
+    }
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
@@ -416,6 +433,12 @@ fn call_tool(state: AppState, auth: AuthContext, params: Value) -> Result<Value,
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if !mcp_tool_allowed(name, &auth.identity.capabilities) {
+        return Err(ToolError::new(
+            "operator_capability_denied",
+            format!("token cannot call {name}"),
+        ));
+    }
     match name {
         "bos_work_queue_list" => work_queue_list(&state, &auth.scope, &args),
         "bos_work_item_source" => work_item_source(&state, &auth.scope, &args),
