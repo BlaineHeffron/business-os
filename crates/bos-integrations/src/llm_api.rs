@@ -6,7 +6,7 @@
 //! built by bos-app (`llm.rs`).
 
 use crate::llm_typed_tasks::{
-    TypedLlmExecutionRoute, TypedLlmResponseFormat, TypedLlmTaskOutputEnvelope, TypedLlmTaskRequest,
+    TypedLlmExecutionRoute, TypedLlmTaskOutputEnvelope, TypedLlmTaskRequest,
 };
 use bos_kernel::{AppError, AppResult, CorrelationId, ErrorCode};
 use payload::{
@@ -31,6 +31,13 @@ pub mod anthropic;
 pub(crate) mod payload;
 pub(crate) mod response;
 pub(crate) mod retry;
+
+/// Resolves a JSON schema for a `schema_ref`. `None` = nothing registered.
+pub type SchemaLookup = fn(&str) -> Option<serde_json::Value>;
+
+pub fn no_schema_lookup(_schema_ref: &str) -> Option<serde_json::Value> {
+    None
+}
 
 pub trait DirectLlmClient: Send + Sync {
     fn complete_typed_task(
@@ -161,15 +168,24 @@ pub struct OpenAiCompatibleDirectLlmClient {
     config: OpenAiCompatibleDirectLlmConfig,
     transport: Box<dyn DirectLlmTransport>,
     retry_sleeper: Box<dyn DirectLlmRetrySleeper>,
+    schema_lookup: SchemaLookup,
 }
 
 impl OpenAiCompatibleDirectLlmClient {
     pub fn new(config: OpenAiCompatibleDirectLlmConfig) -> AppResult<Self> {
+        Self::new_with_schema_lookup(config, no_schema_lookup)
+    }
+
+    pub fn new_with_schema_lookup(
+        config: OpenAiCompatibleDirectLlmConfig,
+        schema_lookup: SchemaLookup,
+    ) -> AppResult<Self> {
         let transport = ReqwestDirectLlmTransport::new(config.timeout_ms)?;
         Ok(Self {
             config,
             transport: Box::new(transport),
             retry_sleeper: Box::new(ThreadDirectLlmRetrySleeper),
+            schema_lookup,
         })
     }
 
@@ -178,10 +194,20 @@ impl OpenAiCompatibleDirectLlmClient {
         config: OpenAiCompatibleDirectLlmConfig,
         transport: Box<dyn DirectLlmTransport>,
     ) -> Self {
+        Self::with_transport_and_lookup(config, transport, no_schema_lookup)
+    }
+
+    #[cfg(test)]
+    fn with_transport_and_lookup(
+        config: OpenAiCompatibleDirectLlmConfig,
+        transport: Box<dyn DirectLlmTransport>,
+        schema_lookup: SchemaLookup,
+    ) -> Self {
         Self {
             config,
             transport,
             retry_sleeper: Box::new(ThreadDirectLlmRetrySleeper),
+            schema_lookup,
         }
     }
 
@@ -195,6 +221,7 @@ impl OpenAiCompatibleDirectLlmClient {
             config,
             transport,
             retry_sleeper,
+            schema_lookup: no_schema_lookup,
         }
     }
 }
@@ -215,7 +242,15 @@ impl DirectLlmClient for OpenAiCompatibleDirectLlmClient {
             )
         })?;
         enforce_max_input_bytes(&input_json, request.spec.max_input_bytes)?;
-        let body = build_openai_compatible_request_body(request, &self.config.model, input_json)?;
+        let schema = (self.schema_lookup)(&request.spec.schema_ref);
+        let mut schema_response_format = schema.is_some();
+        let mut body = build_openai_compatible_request_body(
+            request,
+            &self.config.model,
+            &input_json,
+            schema.as_ref(),
+            schema_response_format,
+        )?;
         let mut attempts: u8 = 0;
 
         loop {
@@ -247,6 +282,17 @@ impl DirectLlmClient for OpenAiCompatibleDirectLlmClient {
             };
 
             if !(200..300).contains(&response.status) {
+                if response.status == 400 && schema_response_format {
+                    schema_response_format = false;
+                    body = build_openai_compatible_request_body(
+                        request,
+                        &self.config.model,
+                        &input_json,
+                        schema.as_ref(),
+                        false,
+                    )?;
+                    continue;
+                }
                 if let Some(delay) = status_retry_delay(
                     response.status,
                     &response.headers,
@@ -323,12 +369,16 @@ impl DirectLlmClient for OpenAiCompatibleDirectLlmClient {
             )
         })?;
         enforce_max_input_bytes(&input_json, request.spec.max_input_bytes)?;
-        let body = build_openai_compatible_tool_turn_request_body(
+        let schema = (self.schema_lookup)(&request.spec.schema_ref);
+        let mut schema_response_format = schema.is_some();
+        let mut body = build_openai_compatible_tool_turn_request_body(
             request,
             &self.config.model,
-            input_json,
+            &input_json,
             &turn.tools,
             &turn.prior_tool_turns,
+            schema.as_ref(),
+            schema_response_format,
         )?;
         let mut attempts: u8 = 0;
 
@@ -361,6 +411,19 @@ impl DirectLlmClient for OpenAiCompatibleDirectLlmClient {
             };
 
             if !(200..300).contains(&response.status) {
+                if response.status == 400 && schema_response_format {
+                    schema_response_format = false;
+                    body = build_openai_compatible_tool_turn_request_body(
+                        request,
+                        &self.config.model,
+                        &input_json,
+                        &turn.tools,
+                        &turn.prior_tool_turns,
+                        schema.as_ref(),
+                        false,
+                    )?;
+                    continue;
+                }
                 if let Some(delay) = status_retry_delay(
                     response.status,
                     &response.headers,
@@ -659,13 +722,6 @@ fn reject_unsafe_direct_request(request: &TypedLlmTaskRequest) -> AppResult<()> 
         return Err(AppError::unexpected(
             "direct_llm_provider_writes_forbidden",
             "direct typed LLM task cannot enable provider writes",
-            CorrelationId::generate(),
-        ));
-    }
-    if request.spec.response_format != TypedLlmResponseFormat::JsonObject {
-        return Err(AppError::invalid_input(
-            "direct_llm_response_format_unsupported",
-            "OpenAI-compatible direct LLM client currently supports json_object response format only",
             CorrelationId::generate(),
         ));
     }

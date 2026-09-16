@@ -3,12 +3,9 @@
 //! from its `llm_client::anthropic` (inlined here — BusinessOS has no other
 //! Anthropic caller).
 //!
-//! SIMPLIFICATION vs agent_monitor: agent_monitor resolved Structured Outputs schemas from its
-//! `dm_business` schema registry. BusinessOS has no schema registry yet, so the
-//! lookup is an injectable seam ([`SchemaLookup`], default: no schema, which
-//! omits `output_config` and relies on the JSON-only system prompt). Wire a
-//! real registry through [`AnthropicDirectLlmClient::new_with_schema_lookup`]
-//! when one exists.
+//! Structured Outputs schemas resolve through [`SchemaLookup`]. When a schema
+//! is present it is sent as `output_config` and embedded in the system prompt;
+//! when absent, the client omits `output_config` and names `schema_ref` only.
 
 use crate::llm_api::response::{
     enforce_max_input_bytes, enforce_max_output_bytes, hash_response, map_provider_status_error,
@@ -19,7 +16,8 @@ use crate::llm_api::retry::{
     DirectLlmRetrySleeper, ThreadDirectLlmRetrySleeper,
 };
 use crate::llm_api::{
-    DirectLlmClient, DirectLlmTransport, DirectLlmTransportRequest, ReqwestDirectLlmTransport,
+    no_schema_lookup, DirectLlmClient, DirectLlmTransport, DirectLlmTransportRequest,
+    ReqwestDirectLlmTransport,
 };
 use crate::llm_typed_tasks::{
     TypedLlmExecutionRoute, TypedLlmTaskOutputEnvelope, TypedLlmTaskRequest,
@@ -33,13 +31,7 @@ use std::time::Instant;
 const DEFAULT_TEMPERATURE: f32 = 0.0;
 pub const PROMPT_CACHING_BETA_HEADER: &str = "prompt-caching-2024-07-31";
 
-/// Resolves a JSON schema for a `schema_ref`, enabling Anthropic Structured
-/// Outputs when present. `None` = no schema registered for that ref.
-pub type SchemaLookup = fn(&str) -> Option<Value>;
-
-fn no_schema_lookup(_schema_ref: &str) -> Option<Value> {
-    None
-}
+pub use crate::llm_api::SchemaLookup;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AnthropicDirectLlmConfig {
@@ -225,13 +217,13 @@ impl DirectLlmClient for AnthropicDirectLlmClient {
         })?;
         enforce_max_input_bytes(&input_json, request.spec.max_input_bytes)?;
 
-        let output_config =
-            (self.schema_lookup)(&request.spec.schema_ref).map(|schema| AnthropicOutputConfig {
-                format: AnthropicOutputFormat {
-                    kind: "json_schema",
-                    schema,
-                },
-            });
+        let schema = (self.schema_lookup)(&request.spec.schema_ref);
+        let output_config = schema.as_ref().map(|schema| AnthropicOutputConfig {
+            format: AnthropicOutputFormat {
+                kind: "json_schema",
+                schema: schema.clone(),
+            },
+        });
 
         let body = serde_json::to_string(&AnthropicStructuredRequest {
             model: self.config.model.clone(),
@@ -242,7 +234,11 @@ impl DirectLlmClient for AnthropicDirectLlmClient {
             temperature: DEFAULT_TEMPERATURE,
             system: vec![AnthropicTextBlock {
                 kind: "text".to_string(),
-                text: typed_task_system_prompt(request),
+                text: crate::llm_api::payload::typed_task_system_prompt(
+                    request,
+                    false,
+                    schema.as_ref(),
+                ),
                 cache_control: Some(AnthropicCacheControl {
                     kind: "ephemeral".to_string(),
                 }),
@@ -386,19 +382,6 @@ fn first_text_block(blocks: &[AnthropicContentBlock]) -> Option<&str> {
         .find(|text| !text.is_empty())
 }
 
-fn typed_task_system_prompt(request: &TypedLlmTaskRequest) -> String {
-    format!(
-        "You perform one bounded typed transformation.\n\
-         Output JSON only for schema_ref={}.\n\
-         Prompt template id={} version={} hash={}.\n\
-         Side effects, provider writes, browsing, tools, filesystem access, and route changes are forbidden.",
-        request.spec.schema_ref,
-        request.spec.prompt_template_id,
-        request.spec.prompt_template_version,
-        request.spec.prompt_template_hash
-    )
-}
-
 fn reject_unsafe_anthropic_request(request: &TypedLlmTaskRequest) -> AppResult<()> {
     if request.execution_policy.default_route != TypedLlmExecutionRoute::DirectApi {
         return Err(AppError::unexpected(
@@ -421,7 +404,6 @@ fn reject_unsafe_anthropic_request(request: &TypedLlmTaskRequest) -> AppResult<(
             CorrelationId::generate(),
         ));
     }
-    // Unlike the OpenAI-compatible client, BOTH JsonObject and JsonSchema are accepted;
     // Structured Outputs engagement is decided by schema-lookup presence, not response_format.
     Ok(())
 }
