@@ -28,6 +28,7 @@
   "invoice_drafts",
   "lead_discovery",
   "ledger_drafts",
+  "operator_api_tokens",
   "operator_notes",
   "operator_users",
   "owner_reports",

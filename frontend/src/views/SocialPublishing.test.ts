@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { SocialPostProposalWithRevision } from "../types/generated/SocialPostProposalWithRevision";
+import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
+import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
 import {
   nextSocialProposalId,
+  proposalListLabel,
+  targetInput,
   targetReadyForProvider,
   targetRequest,
+  targetsForDestinationChange,
+  trackedUrlLabel,
 } from "./SocialPublishing";
 
 function proposal(id: string): SocialPostProposalWithRevision {
@@ -74,5 +80,115 @@ describe("social proposal keyboard navigation", () => {
         "instagram",
       ),
     ).toBe(true);
+  });
+});
+
+describe("proposal list labels", () => {
+  it("uses the source title, otherwise the URL path, otherwise ad-hoc", () => {
+    expect(proposalListLabel({ canonical_url: null, source_id: null }, [])).toBe(
+      "Ad-hoc post",
+    );
+    expect(
+      proposalListLabel(
+        { canonical_url: "https://example.com/blog/post", source_id: null },
+        [],
+      ),
+    ).toBe("/blog/post");
+    expect(
+      proposalListLabel(
+        { canonical_url: null, source_id: "src-1" },
+        [{ source_id: "src-1", title: "Closed Christmas Day" } as never],
+      ),
+    ).toBe("Closed Christmas Day");
+  });
+});
+
+describe("url-less target UTM", () => {
+  const channel: SocialPublishingChannel = {
+    channel_id: "channel-a",
+    name: "Company LinkedIn",
+    platform: "linkedin",
+  };
+  const emptyUtm = {
+    source: null,
+    medium: null,
+    campaign: null,
+    content: null,
+  };
+  const source = (canonical_url: string | null): SocialPublishedSource =>
+    ({
+      source_id: "src-1",
+      source_kind: "adhoc",
+      external_id: "adhoc-1",
+      title: "Closed Christmas Day",
+      canonical_url,
+      generation_status: "ready",
+      revision: 1,
+    }) as SocialPublishedSource;
+
+  it("does not seed UTM without a destination",
+    () => {
+      expect(targetInput(channel).utm).toEqual(emptyUtm);
+      expect(targetInput(channel, source(null)).utm).toEqual(emptyUtm);
+    },
+  );
+
+  it("seeds UTM when the source has a destination",
+    () => {
+      expect(
+        targetInput(channel, source("https://example.com/holiday-hours")).utm,
+      ).toEqual({
+        source: "linkedin",
+        medium: "social",
+        campaign: "blog",
+        content: null,
+      });
+    },
+  );
+
+  it("strips UTM in targetRequest when there is no destination",
+    () => {
+      const withUtm = {
+        channel_id: "channel-a",
+        text: "Closed December 25.",
+        image_url: null,
+        utm: {
+          source: "linkedin",
+          medium: "social",
+          campaign: "blog",
+          content: null,
+        },
+        schedule_mode: "queue" as const,
+        due_at: null,
+      };
+      expect(targetRequest(withUtm, false).utm).toEqual(emptyUtm);
+      expect(targetRequest(withUtm, true).utm).toEqual(withUtm.utm);
+    },
+  );
+
+  it("clears UTM when the destination is removed and seeds it when one is added", () => {
+    const withUtm = targetInput(channel, source("https://example.com/hours"));
+    const withoutUtm = targetInput(channel, source(null));
+    expect(
+      targetsForDestinationChange([withUtm], [channel], true, false)[0].utm,
+    ).toEqual(emptyUtm);
+    expect(
+      targetsForDestinationChange([withoutUtm], [channel], false, true)[0].utm,
+    ).toEqual({
+      source: "linkedin",
+      medium: "social",
+      campaign: "blog",
+      content: null,
+    });
+    expect(
+      targetsForDestinationChange([withUtm], [channel], true, true),
+    ).toEqual([withUtm]);
+  });
+
+  it("labels a missing tracked URL as none", () => {
+    expect(trackedUrlLabel("")).toBe("None");
+    expect(trackedUrlLabel("https://example.com/post")).toBe(
+      "https://example.com/post",
+    );
   });
 });

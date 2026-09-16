@@ -17,7 +17,7 @@ CRM, Gmail, admin settings, or user administration.
 | `social_publishing:approve` | `POST /api/social-publishing/proposals/{id}/action` |
 | `social_publishing:stage` | `POST /api/social-publishing/proposals` (operator-authored copy) |
 | `social_publishing:generate` | generate / preview kickoff routes |
-| `agent_mcp:ingest` | MCP endpoint, `bos_social_published_content_ingest` only |
+| `agent_mcp:ingest` | MCP endpoint, `bos_social_published_content_ingest` and `bos_social_adhoc_source_create` only |
 
 Unknown capability strings are rejected at mint time. An empty list is
 rejected. There is no wildcard; unscoped access is only the existing env and

@@ -110,8 +110,10 @@ pub struct BufferPostOutboxPayload {
     pub channel_id: String,
     pub channel_name: String,
     pub platform: String,
-    pub canonical_url: String,
-    pub tracked_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_url: Option<String>,
     pub text: String,
     pub image_url: Option<String>,
     pub utm_json: String,
@@ -315,18 +317,23 @@ impl<C: BufferHttp> LiveBufferClient<C> {
                 );
             }
             GOOGLE_BUSINESS_PLATFORM => {
-                input.insert(
-                    "metadata".to_string(),
-                    json!({
-                        "google": {
-                            "type": "whats_new",
-                            "detailsWhatsNew": {
-                                "button": "learn_more",
-                                "link": payload.tracked_url,
-                            }
-                        }
-                    }),
-                );
+                let mut google =
+                    serde_json::Map::from_iter([("type".to_string(), json!("whats_new"))]);
+                if let Some(link) = payload
+                    .tracked_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|url| valid_https_url(url))
+                {
+                    google.insert(
+                        "detailsWhatsNew".to_string(),
+                        json!({
+                            "button": "learn_more",
+                            "link": link,
+                        }),
+                    );
+                }
+                input.insert("metadata".to_string(), json!({ "google": google }));
             }
             _ => {}
         }
@@ -456,17 +463,31 @@ pub fn validate_payload(payload: &BufferPostOutboxPayload) -> Result<(), BufferW
             "Buffer platform is not supported by this approved post contract",
         ));
     }
-    if !valid_https_url(&payload.canonical_url) || !valid_https_url(&payload.tracked_url) {
-        return Err(permanent(
-            "buffer_canonical_url_invalid",
-            "canonical and tracked URLs must use https",
-        ));
-    }
-    if !payload.text.contains(&payload.tracked_url) {
-        return Err(permanent(
-            "buffer_tracked_url_missing",
-            "approved text must contain the tracked URL",
-        ));
+    match (
+        nonempty_url(payload.canonical_url.as_deref()),
+        nonempty_url(payload.tracked_url.as_deref()),
+    ) {
+        (None, None) => {}
+        (Some(canonical), Some(tracked)) => {
+            if !valid_https_url(canonical) || !valid_https_url(tracked) {
+                return Err(permanent(
+                    "buffer_canonical_url_invalid",
+                    "canonical and tracked URLs must use https",
+                ));
+            }
+            if !payload.text.contains(tracked) {
+                return Err(permanent(
+                    "buffer_tracked_url_missing",
+                    "approved text must contain the tracked URL",
+                ));
+            }
+        }
+        _ => {
+            return Err(permanent(
+                "buffer_canonical_url_invalid",
+                "canonical and tracked URLs must both be present or both omitted",
+            ));
+        }
     }
     if let Some(image_url) = payload.image_url.as_deref() {
         if !valid_https_url(image_url) {
@@ -505,6 +526,10 @@ pub fn validate_payload(payload: &BufferPostOutboxPayload) -> Result<(), BufferW
         }
         _ => Ok(()),
     }
+}
+
+fn nonempty_url(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn valid_https_url(raw: &str) -> bool {
@@ -564,8 +589,8 @@ mod tests {
             channel_id: "channel_1".to_string(),
             channel_name: "LinkedIn".to_string(),
             platform: "linkedin".to_string(),
-            canonical_url: "https://example.com/post".to_string(),
-            tracked_url: "https://example.com/post?utm_source=linkedin".to_string(),
+            canonical_url: Some("https://example.com/post".to_string()),
+            tracked_url: Some("https://example.com/post?utm_source=linkedin".to_string()),
             text: "Read it: https://example.com/post?utm_source=linkedin".to_string(),
             image_url: Some("https://example.com/image.jpg".to_string()),
             utm_json: r#"{"source":"linkedin"}"#.to_string(),
@@ -586,6 +611,18 @@ mod tests {
         assert!(result.dry_run);
         assert!(!result.executed);
         assert_eq!(result.post_id, None);
+    }
+
+    #[test]
+    fn url_less_payload_is_valid_without_a_tracked_link() {
+        let mut adhoc = payload();
+        adhoc.canonical_url = None;
+        adhoc.tracked_url = None;
+        adhoc.text = "Closed December 25.".to_string();
+        adhoc.utm_json = "{}".to_string();
+        DryRunBufferClient
+            .create_post(&adhoc)
+            .expect("url-less dry run");
     }
 
     #[test]
@@ -705,8 +742,37 @@ mod tests {
         assert_eq!(google["detailsWhatsNew"]["button"], "learn_more");
         assert_eq!(
             google["detailsWhatsNew"]["link"],
-            google_business.tracked_url
+            google_business.tracked_url.clone().expect("tracked url")
         );
+    }
+
+    #[test]
+    fn google_business_omits_learn_more_when_there_is_no_destination() {
+        let http = Arc::new(FakeHttp::default());
+        http.respond(
+            200,
+            json!({ "data": { "createPost": { "post": { "id": "gbp_adhoc" } } } }),
+        );
+        let client = LiveBufferClient::new(
+            Arc::clone(&http),
+            &BufferWriteConfig {
+                api_url: DEFAULT_BUFFER_API_URL.to_string(),
+                access_token: Some("secret-never-persisted".to_string()),
+                write_enabled: true,
+            },
+        )
+        .expect("client");
+        let mut adhoc = payload();
+        adhoc.platform = GOOGLE_BUSINESS_PLATFORM.to_string();
+        adhoc.canonical_url = None;
+        adhoc.tracked_url = None;
+        adhoc.text = "Holiday hours this week.".to_string();
+        adhoc.utm_json = "{}".to_string();
+        client.create_post(&adhoc).expect("url-less google post");
+        let calls = http.calls.lock().expect("lock");
+        let google = &calls[0].2["variables"]["input"]["metadata"]["google"];
+        assert_eq!(google["type"], "whats_new");
+        assert!(google.get("detailsWhatsNew").is_none());
     }
 
     #[test]

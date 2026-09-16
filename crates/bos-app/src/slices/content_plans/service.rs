@@ -679,7 +679,7 @@ pub fn prepare_campaign_publication(
             || proposal.proposal.status != SocialProposalStatus::Staged
             || proposal.proposal.source_content_draft_id.as_deref() != Some(&draft.draft.draft_id)
             || proposal.proposal.source_content_draft_revision != Some(draft.revision)
-            || proposal.proposal.canonical_url != expected_url
+            || proposal.proposal.canonical_url.as_deref() != Some(expected_url.as_str())
         {
             return Err(StoreError::Domain(
                 "content_campaign_social_snapshot_changed".to_string(),
@@ -950,7 +950,7 @@ fn campaign_social_jobs(
         source_id: None,
         source_content_draft_id: Some(current.publication.content_draft_id.clone()),
         source_content_draft_revision: Some(current.publication.content_draft_revision),
-        canonical_url: current.publication.expected_canonical_url.clone(),
+        canonical_url: Some(current.publication.expected_canonical_url.clone()),
         status: SocialProposalStatus::Staged,
         targets: current.publication.approved_social_targets.clone(),
         approved_by: None,

@@ -7,7 +7,12 @@ export type SocialPostProposal = { proposal_id: string, source_id?: string | nul
  * Exact article revision used to ground a pre-publication proposal.
  * Absent for external/published-only ingress.
  */
-source_content_draft_revision?: number | null, canonical_url: string, status: SocialProposalStatus, targets: Array<SocialProposalTarget>, approved_by?: string | null,
+source_content_draft_revision?: number | null,
+/**
+ * Destination URL copied into approved text. Absent for ad-hoc posts with
+ * no link.
+ */
+canonical_url?: string | null, status: SocialProposalStatus, targets: Array<SocialProposalTarget>, approved_by?: string | null,
 /**
  * Revision whose exact payload was approved. The approval mutation itself
  * advances the entity to the next revision.

@@ -471,6 +471,10 @@ const MIGRATION_SOURCES: &[(&str, &str)] = &[
         "0114_operator_api_tokens",
         include_str!("persistence/migrations/0114_operator_api_tokens.sql"),
     ),
+    (
+        "0115_social_adhoc_nullable_canonical",
+        include_str!("persistence/migrations/0115_social_adhoc_nullable_canonical.sql"),
+    ),
 ];
 
 fn migrations() -> Migrations<'static> {

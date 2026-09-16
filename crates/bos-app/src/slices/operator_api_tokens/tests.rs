@@ -471,7 +471,13 @@ async fn ingest_only_mcp_hides_other_tools_and_denies_them() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["bos_social_published_content_ingest"]);
+    assert_eq!(
+        names,
+        vec![
+            "bos_social_published_content_ingest",
+            "bos_social_adhoc_source_create",
+        ]
+    );
 
     let (status, body) = response_json(
         json_request(

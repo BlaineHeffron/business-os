@@ -97,7 +97,10 @@ pub struct SocialPostProposal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub source_content_draft_revision: Option<u64>,
-    pub canonical_url: String,
+    /// Destination URL copied into approved text. Absent for ad-hoc posts with
+    /// no link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
     pub status: SocialProposalStatus,
     pub targets: Vec<SocialProposalTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,7 +136,9 @@ pub struct SocialPublishedSource {
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub source_content_draft_revision: Option<u64>,
     pub title: String,
-    pub canonical_url: String,
+    /// Canonical published HTTPS URL. Absent for ad-hoc sources with no destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +207,21 @@ pub struct SocialPublishedContentIngressRequest {
     pub excerpt: Option<String>,
     #[serde(default)]
     pub published_at: Option<String>,
+    pub idempotency_key: String,
+}
+
+/// Agent-safe one-off source with no published article. Identity and grounding
+/// only; copy, channels, approval, and provider-write fields are absent.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SocialAdhocSourceCreateRequest {
+    pub title: String,
+    /// Factual basis quotes must come from. Not the post copy.
+    pub grounding_text: String,
+    /// Optional destination HTTPS URL. Omitted for posts with no link.
+    #[serde(default)]
+    pub link_url: Option<String>,
     pub idempotency_key: String,
 }
 

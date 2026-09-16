@@ -1426,7 +1426,7 @@ fn campaign_approval_snapshots_exact_revisions_and_enqueues_blog_only() {
             source_content_draft_id: Some(draft_id.clone()),
             source_content_draft_revision: Some(approved.revision),
             title: approved.draft.title.clone(),
-            canonical_url: "https://example.com/campaign-guide".to_string(),
+            canonical_url: Some("https://example.com/campaign-guide".to_string()),
             excerpt: approved.draft.meta_description.clone(),
             published_at: None,
             generation_status:
