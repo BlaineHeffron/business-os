@@ -468,8 +468,12 @@ const MIGRATION_SOURCES: &[(&str, &str)] = &[
         include_str!("persistence/migrations/0113_draft_source_user.sql"),
     ),
     (
-        "0114_social_adhoc_nullable_canonical",
-        include_str!("persistence/migrations/0114_social_adhoc_nullable_canonical.sql"),
+        "0114_operator_api_tokens",
+        include_str!("persistence/migrations/0114_operator_api_tokens.sql"),
+    ),
+    (
+        "0115_social_adhoc_nullable_canonical",
+        include_str!("persistence/migrations/0115_social_adhoc_nullable_canonical.sql"),
     ),
 ];
 

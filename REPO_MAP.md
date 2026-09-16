@@ -461,6 +461,21 @@ Tables: ledger_entry_drafts
 
 Read models: ledger_drafts
 
+### `operator_api_tokens` — Scoped operator tokens
+
+Machine operator credentials with an explicit capability list. Unscoped env and personal-user tokens keep full access; a scoped token can be minted for social publishing and/or agent MCP ingest only.
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/api/operator-tokens` | List scoped API tokens (metadata only; secrets are never readable) |
+| POST | `/api/operator-tokens` | Mint a scoped API token (returns the bearer secret ONCE) |
+| POST | `/api/operator-tokens/{token_id}/action` | Enable, disable, or revoke a scoped token (disable/revoke stop authentication immediately) |
+| POST | `/api/operator-tokens/{token_id}/rotate-token` | Replace the bearer secret (returned ONCE; the old secret stops working) |
+
+Tables: operator_api_tokens
+
+Read models: operator_api_tokens
+
 ### `operator_notes` — Operator notes
 
 Manually logged notes as a work-item source: creating a note emits a work item (category operator_note; policy supplies packet kinds, defaulting to CRM note + follow-up task), and produce kinds run over the note text.
@@ -759,7 +774,7 @@ Read models: work_queue_feed, work_queue_policies
 | `BOS_LLM_ROUTE_OVERRIDES` | — | Per-purpose typed-LLM routing overrides, comma list of purpose=api|harness|local optionally followed by :model (e.g. social_post_draft=local:qwen3). Local uses the loopback-only OpenAI-compatible profile and never falls back remotely. |
 | `BOS_LLM_TIMEOUT_MS` | `120000` | Timeout for one typed LLM task execution. |
 | `BOS_LOG_LEVEL` | `info` | Tracing filter (e.g. info, bos_app=debug). |
-| `BOS_OPERATOR_TOKEN` | — | Bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token. |
+| `BOS_OPERATOR_TOKEN` | — | Unscoped bearer token required on operator routes. Unset = open on loopback only; non-loopback binds refuse to start without this token. Mint scoped machine tokens via POST /api/operator-tokens for the Slack bridge and agent MCP. |
 | `BOS_OUTBOX_DELIVERY_ENABLED` | `1` | Run the outbox delivery worker (on by default; set 0 to pause all provider deliveries). |
 | `BOS_OUTBOX_DELIVERY_INTERVAL_SECS` | `15` | Seconds between outbox delivery polls. |
 | `BOS_OWNER_REPORT_ALLOWED_OPERATOR_USER_IDS` | — | Comma/space-separated operator user ids allowed to view, generate, and email owner reports. Overrides overlay [owner_reports].allowed_operator_user_ids. Empty = any authenticated operator. |
