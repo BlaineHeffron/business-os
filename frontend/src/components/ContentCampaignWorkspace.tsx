@@ -304,7 +304,7 @@ export default function ContentCampaignWorkspace({
     dispatchPlanLocalForm({
       type: "social_loaded",
       channelIds: social.proposal.targets.map((target) => target.channel_id),
-      canonicalUrl: social.proposal.canonical_url,
+      canonicalUrl: social.proposal.canonical_url ?? "",
     });
   }, [social?.proposal.proposal_id, social?.revision]);
 

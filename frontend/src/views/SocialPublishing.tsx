@@ -23,11 +23,34 @@ function statusLabel(status: SocialProposalStatus): string {
   return "Needs approval";
 }
 
+function destinationLabel(url: string | null | undefined): string | null {
+  const value = url?.trim();
+  if (!value) return null;
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return value;
+  }
+}
+
+export function proposalListLabel(
+  proposal: { canonical_url?: string | null; source_id?: string | null },
+  sources: readonly SocialPublishedSource[],
+): string {
+  const sourceTitle = sources.find(
+    (source) => source.source_id === proposal.source_id,
+  )?.title;
+  if (sourceTitle) return sourceTitle;
+  return destinationLabel(proposal.canonical_url) ?? "Ad-hoc post";
+}
+
 function targetInput(
   channel: SocialPublishingChannel,
   source?: SocialPublishedSource,
 ): SocialProposalTargetInput {
-  const text = source ? `${source.title}\n\n${source.canonical_url}` : "";
+  const text = source
+    ? [source.title, source.canonical_url].filter(Boolean).join("\n\n")
+    : "";
   return {
     channel_id: channel.channel_id,
     text,
@@ -197,7 +220,7 @@ export default function SocialPublishing({
 
   useEffect(() => {
     if (!selected || selected.proposal.status !== "staged") return;
-    setCanonicalUrl(selected.proposal.canonical_url);
+    setCanonicalUrl(selected.proposal.canonical_url ?? "");
     setSourceId(selected.proposal.source_id ?? "");
     setTargets(
       selected.proposal.targets.map((target) => ({
@@ -223,7 +246,7 @@ export default function SocialPublishing({
     setSourceId(nextId);
     const source = sources.find((item) => item.source_id === nextId);
     if (!source) return;
-    setCanonicalUrl(source.canonical_url);
+    setCanonicalUrl(source.canonical_url ?? "");
     setTargets(channels.map((channel) => targetInput(channel, source)));
   };
 
@@ -267,13 +290,13 @@ export default function SocialPublishing({
   };
 
   const save = async () => {
-    if (!canonicalUrl.trim() || targets.some((target) => !target.text.trim())) return;
+    if (targets.some((target) => !target.text.trim())) return;
     setBusy("save");
     setNotice(null);
     try {
       if (selected?.proposal.status === "staged") {
         await api.updateSocialProposal(selected.proposal.proposal_id, {
-          canonical_url: canonicalUrl,
+          canonical_url: canonicalUrl.trim(),
           targets: targets.map(targetRequest),
           expected_revision: selected.revision,
           idempotency_key: crypto.randomUUID(),
@@ -286,7 +309,7 @@ export default function SocialPublishing({
           source_content_draft_id: selectedSource?.source_content_draft_id ?? null,
           source_content_draft_revision:
             selectedSource?.source_content_draft_revision ?? null,
-          canonical_url: canonicalUrl,
+          canonical_url: canonicalUrl.trim(),
           targets: targets.map(targetRequest),
           idempotency_key: crypto.randomUUID(),
           actor_id: null,
@@ -341,7 +364,7 @@ export default function SocialPublishing({
   const editing = !selected || selected.proposal.status === "staged";
   const hasUnsavedChanges = Boolean(
     selected?.proposal.status === "staged" &&
-      (canonicalUrl.trim() !== selected.proposal.canonical_url ||
+      (canonicalUrl.trim() !== (selected.proposal.canonical_url ?? "") ||
         JSON.stringify(targets.map(targetRequest)) !==
           JSON.stringify(selected.proposal.targets.map(targetRequest))),
   );
@@ -353,7 +376,6 @@ export default function SocialPublishing({
   );
   const canSave =
     bufferConfigured &&
-    canonicalUrl.trim().length > 0 &&
     targets.length === channels.length &&
     targets.every(
       (target) =>
@@ -447,7 +469,7 @@ export default function SocialPublishing({
           ) : proposals.length === 0 ? (
             <div className="p-4">
               <EmptyState title="No social proposals">
-                Start after a blog post has a canonical published URL.
+                Start after a published article or an ad-hoc source is ready.
               </EmptyState>
             </div>
           ) : (
@@ -474,7 +496,7 @@ export default function SocialPublishing({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-200">
-                      {new URL(entry.proposal.canonical_url).pathname}
+                      {proposalListLabel(entry.proposal, sources)}
                     </span>
                     <StatusBadge tone={statusTone(entry.proposal.status)}>
                       {statusLabel(entry.proposal.status)}
@@ -518,7 +540,7 @@ export default function SocialPublishing({
                       onChange={(event) => chooseSource(event.target.value)}
                       className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30"
                     >
-                      <option value="">Use another canonical URL</option>
+                      <option value="">Use another destination or none</option>
                       {sources.map((source) => (
                         <option key={source.source_id} value={source.source_id}>
                           {source.title}
@@ -557,7 +579,7 @@ export default function SocialPublishing({
                   </div>
                 ) : null}
                 <label className="block text-xs font-medium text-zinc-400">
-                  Canonical published URL
+                  Destination URL (optional)
                   <input
                     type="url"
                     value={canonicalUrl}
@@ -580,7 +602,7 @@ export default function SocialPublishing({
                   </div>
                 ) : null}
               </div>
-            ) : selected ? (
+            ) : selected?.proposal.canonical_url ? (
               <a
                 href={selected.proposal.canonical_url}
                 target="_blank"
@@ -589,6 +611,8 @@ export default function SocialPublishing({
               >
                 {selected.proposal.canonical_url}
               </a>
+            ) : selected ? (
+              <p className="text-sm text-zinc-400">No destination URL</p>
             ) : null}
           </Surface>
 

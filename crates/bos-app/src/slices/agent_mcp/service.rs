@@ -395,6 +395,21 @@ fn tools_for_state(state: &AppState) -> Vec<Value> {
                 "additionalProperties": false
             }),
         ));
+        tools.push(tool(
+            "bos_social_adhoc_source_create",
+            "Register a one-off social source with a topic and factual grounding, without a published article. BusinessOS drafts social copy separately; this tool cannot submit copy, approve, publish, select channels, or access Buffer credentials.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Short topic or title for the one-off post." },
+                    "grounding_text": { "type": "string", "description": "Factual basis quotes must come from. Not the post copy." },
+                    "link_url": { "type": "string", "description": "Optional https destination URL. Omit for posts with no link." },
+                    "idempotency_key": { "type": "string" }
+                },
+                "required": ["title", "grounding_text", "idempotency_key"],
+                "additionalProperties": false
+            }),
+        ));
     }
     tools
 }
@@ -429,6 +444,7 @@ fn call_tool(state: AppState, auth: AuthContext, params: Value) -> Result<Value,
         "bos_social_published_content_ingest" => {
             social_published_content_ingest(state, auth, &args)
         }
+        "bos_social_adhoc_source_create" => social_adhoc_source_create(state, auth, &args),
         _ => Err(ToolError::new(
             "mcp_tool_unsupported",
             format!("unsupported BusinessOS MCP tool {name}"),
@@ -904,6 +920,65 @@ fn social_published_content_ingest(
     let proposal_state = source.generation_status;
     Ok(tool_result(
         "Published content registered. BusinessOS social drafting started.",
+        json!({
+            "source": source,
+            "proposal_state": proposal_state,
+            "approval_required": true,
+            "provider_write": "not_performed",
+        }),
+    ))
+}
+
+fn social_adhoc_source_create(
+    state: AppState,
+    auth: AuthContext,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    require_slice(&state, crate::slices::social_publishing::SLICE.id)?;
+    let request: bos_contracts::social_publishing::SocialAdhocSourceCreateRequest =
+        serde_json::from_value(args.clone()).map_err(|_| {
+            ToolError::new(
+                "mcp_argument_invalid",
+                "ad-hoc source arguments do not match the ingress contract",
+            )
+        })?;
+    let actor_id = mcp_actor(&auth);
+    let source = {
+        let mut persistence = state.persistence.lock();
+        crate::slices::social_publishing::service::ingest_adhoc_source_request(
+            persistence.connection(),
+            &state.client_id,
+            &actor_id,
+            bos_contracts::receipt::ActorKindDto::Agent,
+            &request,
+            now_ms(),
+        )
+        .map_err(store_tool_error)?
+    };
+    let generation_key = format!("social-adhoc-generate:{}", request.idempotency_key);
+    let source = match crate::slices::social_publishing::service::kickoff_generation(
+        state,
+        &source.source_id,
+        source.revision,
+        &generation_key,
+        "social_draft_generator",
+        bos_contracts::receipt::ActorKindDto::System,
+    )
+    .map_err(store_tool_error)?
+    {
+        crate::slices::social_publishing::service::GenerationKickoffOutcome::Accepted(source) => {
+            source
+        }
+        crate::slices::social_publishing::service::GenerationKickoffOutcome::Conflict(_) => {
+            return Err(ToolError::new(
+                "expected_revision_conflict",
+                "ad-hoc source changed before drafting began",
+            ));
+        }
+    };
+    let proposal_state = source.generation_status;
+    Ok(tool_result(
+        "Ad-hoc source registered. BusinessOS social drafting started.",
         json!({
             "source": source,
             "proposal_state": proposal_state,

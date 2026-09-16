@@ -447,7 +447,7 @@ pub fn update_proposal(
     conn: &mut Connection,
     ctx: MutationContext<'_>,
     proposal_id: &str,
-    canonical_url: &str,
+    canonical_url: Option<&str>,
     targets: &[SocialProposalTarget],
 ) -> Result<MutationOutcome, StoreError> {
     require_expected_revision(ctx.expected_revision)?;
@@ -461,13 +461,13 @@ pub fn update_proposal(
     let targets_json = serialize_targets(targets)?;
     let before = proposal_snapshot_json(&current.proposal, Some(current.revision))?;
     let mut next = current.proposal.clone();
-    next.canonical_url = canonical_url.to_string();
+    next.canonical_url = canonical_url.map(str::to_string);
     next.targets = targets.to_vec();
     next.updated_at_ms = ctx.now_ms;
     let after = proposal_snapshot_json(&next, ctx.expected_revision)?;
     let owned_client = ctx.client_id.to_string();
     let owned_proposal = proposal_id.to_string();
-    let owned_url = canonical_url.to_string();
+    let owned_url = canonical_url.map(str::to_string);
     store_core::mutate(
         conn,
         MutationRequest {

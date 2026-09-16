@@ -1,4 +1,4 @@
-//! Social publishing domain logic: normalize a canonical published URL and
+//! Social publishing domain logic: normalize an optional destination URL and
 //! exact per-channel proposals, then deliver immutable approval snapshots via
 //! Buffer. No LLM or agent path receives Buffer credentials.
 
@@ -12,10 +12,11 @@ use std::sync::{Mutex, OnceLock};
 use bos_contracts::content_drafts::ContentDraftStatus;
 use bos_contracts::receipt::ActorKindDto;
 use bos_contracts::social_publishing::{
-    SocialDraftPreviewGenerateRequest, SocialPostProposal, SocialProposalStageRequest,
-    SocialProposalStatus, SocialProposalTarget, SocialProposalTargetInput,
-    SocialProposalUpdateRequest, SocialPublishedContentIngressRequest, SocialPublishedSource,
-    SocialPublishingChannel, SocialScheduleMode, SocialSourceGenerationStatus, SocialUtmParameters,
+    SocialAdhocSourceCreateRequest, SocialDraftPreviewGenerateRequest, SocialPostProposal,
+    SocialProposalStageRequest, SocialProposalStatus, SocialProposalTarget,
+    SocialProposalTargetInput, SocialProposalUpdateRequest, SocialPublishedContentIngressRequest,
+    SocialPublishedSource, SocialPublishingChannel, SocialScheduleMode,
+    SocialSourceGenerationStatus, SocialUtmParameters,
 };
 use bos_integrations::buffer::{
     self, BufferApprovalMetadata, BufferPostOutboxPayload, BufferScheduleMode, BufferWriteConfig,
@@ -48,6 +49,7 @@ pub const CAPABILITY_CREATE_POST: &str = "create_post";
 pub const DRAFT_PURPOSE: &str = "social_post_draft";
 pub const DRAFT_SCHEMA_REF: &str = "bos.social_publishing.campaign_draft.v1";
 pub const PREVIEW_SOURCE_KIND: &str = "businessos_content_preview";
+pub const ADHOC_SOURCE_KIND: &str = "adhoc";
 const GENERATOR_ACTOR: &str = "social_draft_generator";
 const MAX_POST_TEXT_CHARS: usize = 10_000;
 const MAX_UTM_VALUE_CHARS: usize = 200;
@@ -156,7 +158,7 @@ pub fn published_sources(
             source_content_draft_id: Some(entry.draft.draft_id),
             source_content_draft_revision: Some(entry.revision),
             title: entry.draft.title,
-            canonical_url,
+            canonical_url: Some(canonical_url),
             excerpt: None,
             published_at: None,
             generation_status: if proposal_id.is_some() {
@@ -185,14 +187,14 @@ pub fn stage_request(
     require_idempotency_key(&request.idempotency_key)?;
     let channels = configured_channels()?;
     let proposal_id = proposal_id_for(client_id, &request.idempotency_key);
-    let canonical_url = normalize_canonical_url(&request.canonical_url)?;
+    let canonical_url = optional_canonical_url(Some(&request.canonical_url))?;
     validate_published_source(
         conn,
         client_id,
         request.source_id.as_deref(),
         request.source_content_draft_id.as_deref(),
         request.source_content_draft_revision,
-        &canonical_url,
+        canonical_url.as_deref(),
     )?;
     validate_registered_source(
         conn,
@@ -200,9 +202,14 @@ pub fn stage_request(
         request.source_id.as_deref(),
         request.source_content_draft_id.as_deref(),
         request.source_content_draft_revision,
-        &canonical_url,
+        canonical_url.as_deref(),
     )?;
-    let targets = normalize_targets(&proposal_id, &canonical_url, &channels, &request.targets)?;
+    let targets = normalize_targets(
+        &proposal_id,
+        canonical_url.as_deref(),
+        &channels,
+        &request.targets,
+    )?;
     let proposal = SocialPostProposal {
         proposal_id: proposal_id.clone(),
         source_id: clean_optional(request.source_id.as_deref()),
@@ -247,17 +254,22 @@ pub fn update_request(
             "social_proposal_campaign_locked".to_string(),
         ));
     }
-    let canonical_url = normalize_canonical_url(&request.canonical_url)?;
+    let canonical_url = optional_canonical_url(Some(&request.canonical_url))?;
     validate_published_source(
         conn,
         client_id,
         current.proposal.source_id.as_deref(),
         current.proposal.source_content_draft_id.as_deref(),
         current.proposal.source_content_draft_revision,
-        &canonical_url,
+        canonical_url.as_deref(),
     )?;
     let channels = configured_channels()?;
-    let targets = normalize_targets(proposal_id, &canonical_url, &channels, &request.targets)?;
+    let targets = normalize_targets(
+        proposal_id,
+        canonical_url.as_deref(),
+        &channels,
+        &request.targets,
+    )?;
     store::update_proposal(
         conn,
         MutationContext {
@@ -268,7 +280,7 @@ pub fn update_request(
             now_ms,
         },
         proposal_id,
-        &canonical_url,
+        canonical_url.as_deref(),
         &targets,
     )
 }
@@ -386,14 +398,14 @@ pub fn ingest_source_request(
         ),
         None => None,
     };
-    let canonical_url = normalize_canonical_url(&request.canonical_url)?;
+    let canonical_url = Some(normalize_canonical_url(&request.canonical_url)?);
     validate_published_source(
         conn,
         client_id,
         None,
         request.source_content_draft_id.as_deref(),
         None,
-        &canonical_url,
+        canonical_url.as_deref(),
     )?;
     let source_id = source_id_for(client_id, &source_kind, &external_id);
     let source = SocialPublishedSource {
@@ -406,6 +418,55 @@ pub fn ingest_source_request(
         canonical_url,
         excerpt,
         published_at,
+        generation_status: SocialSourceGenerationStatus::Ready,
+        generation_run_id: None,
+        generation_error: None,
+        proposal_id: None,
+        revision: 0,
+    };
+    persist_source_metadata(
+        conn,
+        client_id,
+        actor_id,
+        actor_kind,
+        &source,
+        &request.idempotency_key,
+        now_ms,
+    )
+}
+
+pub fn ingest_adhoc_source_request(
+    conn: &mut Connection,
+    client_id: &str,
+    actor_id: &str,
+    actor_kind: ActorKindDto,
+    request: &SocialAdhocSourceCreateRequest,
+    now_ms: u64,
+) -> Result<SocialPublishedSource, StoreError> {
+    require_idempotency_key(&request.idempotency_key)?;
+    let title = bounded_text(
+        &request.title,
+        MAX_SOURCE_TITLE_CHARS,
+        "social_source_title_invalid",
+    )?;
+    let grounding = bounded_text(
+        &request.grounding_text,
+        MAX_SOURCE_EXCERPT_CHARS,
+        "social_adhoc_grounding_invalid",
+    )?;
+    let canonical_url = optional_canonical_url(request.link_url.as_deref())?;
+    let external_id = bounded_text(&request.idempotency_key, 300, "social_external_id_invalid")?;
+    let source_id = source_id_for(client_id, ADHOC_SOURCE_KIND, &external_id);
+    let source = SocialPublishedSource {
+        source_id,
+        source_kind: ADHOC_SOURCE_KIND.to_string(),
+        external_id,
+        source_content_draft_id: None,
+        source_content_draft_revision: None,
+        title,
+        canonical_url,
+        excerpt: Some(grounding),
+        published_at: None,
         generation_status: SocialSourceGenerationStatus::Ready,
         generation_run_id: None,
         generation_error: None,
@@ -536,7 +597,7 @@ pub fn kickoff_draft_preview_generation(
             source_content_draft_id: Some(draft_id.to_string()),
             source_content_draft_revision: Some(entry.revision),
             title: entry.draft.title,
-            canonical_url,
+            canonical_url: Some(canonical_url),
             excerpt: entry.draft.meta_description,
             published_at: None,
             generation_status: SocialSourceGenerationStatus::Ready,
@@ -792,19 +853,23 @@ fn execute_source_generation(
                 continue;
             }
         };
-        let targets =
-            match parse_social_draft_response(&envelope.response_json, &channels, &grounding) {
-                Ok(targets) => targets,
-                Err(code) => {
-                    last_code = code;
-                    continue;
-                }
-            };
+        let targets = match parse_social_draft_response(
+            &envelope.response_json,
+            &channels,
+            &grounding,
+            source.canonical_url.as_deref(),
+        ) {
+            Ok(targets) => targets,
+            Err(code) => {
+                last_code = code;
+                continue;
+            }
+        };
         let request = SocialProposalStageRequest {
             source_id: Some(source.source_id.clone()),
             source_content_draft_id: source.source_content_draft_id.clone(),
             source_content_draft_revision: source.source_content_draft_revision,
-            canonical_url: source.canonical_url.clone(),
+            canonical_url: source.canonical_url.clone().unwrap_or_default(),
             targets,
             idempotency_key: format!("social-generation-stage:{run_id}"),
             actor_id: None,
@@ -952,7 +1017,7 @@ pub fn build_social_draft_request(
         },
         input: TypedLlmTaskInput {
             json: json!({
-                "instructions": "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Return exactly {targets:[{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}],confidence}. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions.",
+                "instructions": social_draft_instructions(source),
                 "canonical_url": source.canonical_url,
                 "title": source.title,
                 "published_at": source.published_at,
@@ -986,10 +1051,19 @@ pub fn build_social_draft_request(
     }
 }
 
+fn social_draft_instructions(source: &SocialPublishedSource) -> String {
+    if source.canonical_url.is_none() {
+        "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Draft about those facts; do not treat SOURCE CONTENT as the finished post. Do not invent a destination URL. Return exactly {targets:[{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}],confidence}. Set utm_* to empty strings. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions.".to_string()
+    } else {
+        "Draft one grounded social post per target_ref. Use only facts in SOURCE CONTENT. Return exactly {targets:[{target_ref,text,utm_source,utm_medium,utm_campaign,utm_content,source_quotes}],confidence}. source_quotes must contain literal spans from SOURCE CONTENT supporting the copy. Do not include channel IDs, credentials, approval actions, schedules, or provider instructions.".to_string()
+    }
+}
+
 pub fn parse_social_draft_response(
     response: &Value,
     channels: &[SocialPublishingChannel],
     grounding: &str,
+    destination_url: Option<&str>,
 ) -> Result<Vec<SocialProposalTargetInput>, String> {
     let output: SocialDraftOutput = serde_json::from_value(response.clone())
         .map_err(|_| "social_draft_output_invalid".to_string())?;
@@ -1030,16 +1104,21 @@ pub fn parse_social_draft_response(
                     return Err("social_draft_grounding_invalid".to_string());
                 }
             }
-            Ok(SocialProposalTargetInput {
-                channel_id: channel.channel_id.clone(),
-                text,
-                image_url: None,
-                utm: SocialUtmParameters {
+            let utm = if destination_url.is_some() {
+                SocialUtmParameters {
                     source: Some(required_draft_text(&target.utm_source, "utm_source")?),
                     medium: Some(required_draft_text(&target.utm_medium, "utm_medium")?),
                     campaign: Some(required_draft_text(&target.utm_campaign, "utm_campaign")?),
                     content: clean_optional(target.utm_content.as_deref()),
-                },
+                }
+            } else {
+                SocialUtmParameters::default()
+            };
+            Ok(SocialProposalTargetInput {
+                channel_id: channel.channel_id.clone(),
+                text,
+                image_url: None,
+                utm,
                 schedule_mode: SocialScheduleMode::Queue,
                 due_at: None,
             })
@@ -1127,7 +1206,7 @@ pub fn build_channel_jobs(
                 channel_name: target.channel_name.clone(),
                 platform: target.platform.clone(),
                 canonical_url: proposal.canonical_url.clone(),
-                tracked_url: target.tracked_url.clone(),
+                tracked_url: clean_optional(Some(&target.tracked_url)),
                 text: target.text.clone(),
                 image_url: target.image_url.clone(),
                 utm_json: serde_json::to_string(&target.utm).map_err(|err| {
@@ -1221,7 +1300,7 @@ pub fn execute_job(job: &ClaimedJob, config: &BufferWriteConfig, now_ms: u64) ->
 
 fn normalize_targets(
     proposal_id: &str,
-    canonical_url: &str,
+    canonical_url: Option<&str>,
     channels: &[SocialPublishingChannel],
     inputs: &[SocialProposalTargetInput],
 ) -> Result<Vec<SocialProposalTarget>, StoreError> {
@@ -1250,22 +1329,43 @@ fn normalize_targets(
 
 fn normalize_target(
     proposal_id: &str,
-    canonical_url: &str,
+    canonical_url: Option<&str>,
     channel: &SocialPublishingChannel,
     input: &SocialProposalTargetInput,
 ) -> Result<SocialProposalTarget, StoreError> {
     let utm = normalize_utm(&input.utm)?;
-    let tracked_url = tracked_url(canonical_url, &utm)?;
-    let raw_text = input.text.trim();
-    if raw_text.is_empty() {
-        return Err(StoreError::Domain("social_post_text_required".to_string()));
-    }
-    let text = if raw_text.contains(&tracked_url) {
-        raw_text.to_string()
-    } else if raw_text.contains(canonical_url) {
-        raw_text.replacen(canonical_url, &tracked_url, 1)
-    } else {
-        format!("{raw_text}\n\n{tracked_url}")
+    let has_utm = utm.source.is_some()
+        || utm.medium.is_some()
+        || utm.campaign.is_some()
+        || utm.content.is_some();
+    let (tracked_url, text) = match canonical_url {
+        Some(canonical_url) => {
+            let tracked = tracked_url(canonical_url, &utm)?;
+            let raw_text = input.text.trim();
+            if raw_text.is_empty() {
+                return Err(StoreError::Domain("social_post_text_required".to_string()));
+            }
+            let text = if raw_text.contains(&tracked) {
+                raw_text.to_string()
+            } else if raw_text.contains(canonical_url) {
+                raw_text.replacen(canonical_url, &tracked, 1)
+            } else {
+                format!("{raw_text}\n\n{tracked}")
+            };
+            (tracked, text)
+        }
+        None => {
+            if has_utm {
+                return Err(StoreError::Domain(
+                    "social_utm_without_destination".to_string(),
+                ));
+            }
+            let text = input.text.trim().to_string();
+            if text.is_empty() {
+                return Err(StoreError::Domain("social_post_text_required".to_string()));
+            }
+            (String::new(), text)
+        }
     };
     if text.chars().count() > MAX_POST_TEXT_CHARS {
         return Err(StoreError::Domain("social_post_text_too_long".to_string()));
@@ -1386,13 +1486,20 @@ pub(crate) fn normalize_canonical_url(raw: &str) -> Result<String, StoreError> {
     Ok(url.to_string())
 }
 
+fn optional_canonical_url(raw: Option<&str>) -> Result<Option<String>, StoreError> {
+    match clean_optional(raw) {
+        Some(value) => Ok(Some(normalize_canonical_url(&value)?)),
+        None => Ok(None),
+    }
+}
+
 fn validate_published_source(
     conn: &Connection,
     client_id: &str,
     source_id: Option<&str>,
     source_content_draft_id: Option<&str>,
     source_content_draft_revision: Option<u64>,
-    canonical_url: &str,
+    canonical_url: Option<&str>,
 ) -> Result<(), StoreError> {
     let Some(draft_id) = source_content_draft_id
         .map(str::trim)
@@ -1408,7 +1515,7 @@ fn validate_published_source(
                 if source.source_content_draft_id.as_deref() != Some(draft_id)
                     || source.source_content_draft_revision != source_content_draft_revision
                     || source.source_content_draft_revision != Some(entry.revision)
-                    || source.canonical_url != canonical_url
+                    || source.canonical_url.as_deref() != canonical_url
                     || !matches!(
                         entry.draft.status,
                         ContentDraftStatus::Staged | ContentDraftStatus::Approved
@@ -1437,7 +1544,7 @@ fn validate_published_source(
         ));
     }
     let normalized_published_url = normalize_canonical_url(&published_url)?;
-    if normalized_published_url != canonical_url {
+    if Some(normalized_published_url.as_str()) != canonical_url {
         return Err(StoreError::Domain(
             "social_published_source_url_mismatch".to_string(),
         ));
@@ -1451,7 +1558,7 @@ fn validate_registered_source(
     source_id: Option<&str>,
     source_content_draft_id: Option<&str>,
     source_content_draft_revision: Option<u64>,
-    canonical_url: &str,
+    canonical_url: Option<&str>,
 ) -> Result<(), StoreError> {
     let Some(source_id) = source_id.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(());
@@ -1475,7 +1582,7 @@ fn validate_registered_source(
             ));
         }
     };
-    if source.canonical_url != canonical_url
+    if source.canonical_url.as_deref() != canonical_url
         || clean_optional(source.source_content_draft_id.as_deref())
             != clean_optional(source_content_draft_id)
         || source.source_content_draft_revision != source_content_draft_revision

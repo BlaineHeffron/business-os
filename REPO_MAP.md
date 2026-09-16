@@ -579,7 +579,7 @@ Read models: shopify_sales_status, shopify_sales_orders, shopify_sales_customers
 
 ### `social_publishing` — Social publishing
 
-Published-content ingress and a bounded typed transform produce editable platform-specific proposals. Operator approval snapshots the exact current revision and atomically enqueues one independently retryable Buffer job per channel; live writes default off.
+Published-content or ad-hoc ingress and a bounded typed transform produce editable platform-specific proposals. Operator approval snapshots the exact current revision and atomically enqueues one independently retryable Buffer job per channel; live writes default off.
 
 | Method | Path | Summary |
 | --- | --- | --- |

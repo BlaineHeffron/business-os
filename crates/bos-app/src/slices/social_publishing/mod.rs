@@ -1,5 +1,6 @@
-//! Approval-gated social publishing: canonical blog URL → editable per-channel
-//! proposal → exact-revision operator approval → independent Buffer outbox jobs.
+//! Approval-gated social publishing: published or ad-hoc source → editable
+//! per-channel proposal → exact-revision operator approval → independent Buffer
+//! outbox jobs.
 
 pub mod routes;
 pub mod service;
@@ -14,7 +15,7 @@ use crate::slices::{RouteSpec, SliceSpec};
 pub const SLICE: SliceSpec = SliceSpec {
     id: "social_publishing",
     title: "Social publishing",
-    summary: "Published-content ingress and a bounded typed transform produce editable platform-specific proposals. Operator approval snapshots the exact current revision and atomically enqueues one independently retryable Buffer job per channel; live writes default off.",
+    summary: "Published-content or ad-hoc ingress and a bounded typed transform produce editable platform-specific proposals. Operator approval snapshots the exact current revision and atomically enqueues one independently retryable Buffer job per channel; live writes default off.",
     routes: &[
         RouteSpec {
             method: "GET",

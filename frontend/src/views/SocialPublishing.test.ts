@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SocialPostProposalWithRevision } from "../types/generated/SocialPostProposalWithRevision";
 import {
   nextSocialProposalId,
+  proposalListLabel,
   targetReadyForProvider,
   targetRequest,
 } from "./SocialPublishing";
@@ -74,5 +75,25 @@ describe("social proposal keyboard navigation", () => {
         "instagram",
       ),
     ).toBe(true);
+  });
+});
+
+describe("proposal list labels", () => {
+  it("uses the source title, otherwise the URL path, otherwise ad-hoc", () => {
+    expect(proposalListLabel({ canonical_url: null, source_id: null }, [])).toBe(
+      "Ad-hoc post",
+    );
+    expect(
+      proposalListLabel(
+        { canonical_url: "https://example.com/blog/post", source_id: null },
+        [],
+      ),
+    ).toBe("/blog/post");
+    expect(
+      proposalListLabel(
+        { canonical_url: null, source_id: "src-1" },
+        [{ source_id: "src-1", title: "Closed Christmas Day" } as never],
+      ),
+    ).toBe("Closed Christmas Day");
   });
 });

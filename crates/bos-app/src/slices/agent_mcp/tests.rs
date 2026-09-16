@@ -413,6 +413,7 @@ fn social_tool_is_published_content_ingress_only_and_stamps_agent_provenance() {
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"bos_social_published_content_ingest"));
+    assert!(tool_names.contains(&"bos_social_adhoc_source_create"));
     assert!(!tool_names
         .iter()
         .any(|name| name.contains("proposal_stage")));
@@ -490,5 +491,89 @@ fn social_tool_is_published_content_ingress_only_and_stamps_agent_provenance() {
     assert_eq!(
         job_count, 0,
         "published-content ingress must not enqueue provider writes"
+    );
+}
+
+#[test]
+fn social_adhoc_tool_rejects_copy_fields_and_stamps_agent_provenance() {
+    let _env = EnvGuard::set(
+        "BOS_BUFFER_CHANNELS_JSON",
+        r#"[{"channel_id":"buf_linkedin","name":"Company LinkedIn","platform":"linkedin"}]"#,
+    );
+    let state = test_state_configured(None, &["social_publishing"]);
+    let narrowed = super::service::test_call_tool(
+        state.clone(),
+        shared_auth(),
+        "bos_social_adhoc_source_create",
+        json!({
+            "title": "Closed Christmas Day",
+            "grounding_text": "The shop is closed December 25.",
+            "targets": [{"text": "agent-authored copy is forbidden"}],
+            "idempotency_key": "agent-adhoc-forbidden"
+        }),
+    )
+    .expect_err("copy fields must be outside the adhoc contract");
+    assert_eq!(narrowed, "mcp_argument_invalid");
+    crate::slices::social_publishing::service::set_test_social_draft_responses(vec![json!({
+        "targets": [{
+            "target_ref": "target_1",
+            "text": "The shop is closed December 25.",
+            "utm_source": "",
+            "utm_medium": "",
+            "utm_campaign": "",
+            "utm_content": null,
+            "source_quotes": ["closed December 25"]
+        }],
+        "confidence": "high"
+    })]);
+    let result = super::service::test_call_tool(
+        state.clone(),
+        shared_auth(),
+        "bos_social_adhoc_source_create",
+        json!({
+            "title": "Closed Christmas Day",
+            "grounding_text": "The shop is closed December 25.",
+            "idempotency_key": "agent-adhoc-1"
+        }),
+    )
+    .expect("create adhoc source");
+    assert_eq!(result["structuredContent"]["approval_required"], true);
+    assert_eq!(
+        result["structuredContent"]["provider_write"],
+        "not_performed"
+    );
+    assert_eq!(
+        result["structuredContent"]["source"]["source_kind"],
+        "adhoc"
+    );
+    assert!(result["structuredContent"]["source"]["canonical_url"].is_null());
+    let source_id = result["structuredContent"]["source"]["source_id"]
+        .as_str()
+        .expect("source id");
+    let persistence = state.persistence.lock();
+    let receipts = crate::store_core::receipts_for_entity(
+        persistence.connection_ref(),
+        &state.client_id,
+        crate::slices::social_publishing::store::SOURCE_ENTITY_KIND,
+        source_id,
+        10,
+    )
+    .expect("receipts");
+    let ingress = receipts
+        .iter()
+        .find(|receipt| receipt.change_kind == "ingest")
+        .expect("ingress receipt");
+    assert_eq!(ingress.actor_id, "mcp:operator");
+    assert_eq!(
+        ingress.actor_kind,
+        bos_contracts::receipt::ActorKindDto::Agent
+    );
+    let job_count: i64 = persistence
+        .connection_ref()
+        .query_row("SELECT COUNT(*) FROM outbox_jobs", [], |row| row.get(0))
+        .expect("jobs");
+    assert_eq!(
+        job_count, 0,
+        "ad-hoc ingress must not enqueue provider writes"
     );
 }

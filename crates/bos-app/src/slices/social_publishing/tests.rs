@@ -1,8 +1,8 @@
 use bos_contracts::receipt::ActorKindDto;
 use bos_contracts::social_publishing::{
-    SocialProposalStageRequest, SocialProposalStatus, SocialProposalTargetInput,
-    SocialProposalUpdateRequest, SocialPublishedContentIngressRequest, SocialScheduleMode,
-    SocialSourceGenerationStatus, SocialUtmParameters,
+    SocialAdhocSourceCreateRequest, SocialProposalStageRequest, SocialProposalStatus,
+    SocialProposalTargetInput, SocialProposalUpdateRequest, SocialPublishedContentIngressRequest,
+    SocialScheduleMode, SocialSourceGenerationStatus, SocialUtmParameters,
 };
 use bos_integrations::buffer::{BufferPostOutboxPayload, BufferWriteConfig};
 use serde_json::json;
@@ -85,8 +85,8 @@ fn stage_normalizes_exact_configured_channel_snapshot_and_system_actor() {
         .expect("proposal");
     assert_eq!(entry.proposal.status, SocialProposalStatus::Staged);
     assert_eq!(
-        entry.proposal.canonical_url,
-        "https://example.com/blog/epoxy-guide"
+        entry.proposal.canonical_url.as_deref(),
+        Some("https://example.com/blog/epoxy-guide")
     );
     assert_eq!(entry.proposal.targets.len(), 2);
     assert_eq!(entry.proposal.targets[0].channel_name, "Company LinkedIn");
@@ -697,7 +697,7 @@ fn reingress_preserves_generation_and_approved_proposal_lifecycle() {
 
     let mut proposal_request = stage_request("stage-lifecycle");
     proposal_request.source_id = Some(source.source_id.clone());
-    proposal_request.canonical_url = source.canonical_url.clone();
+    proposal_request.canonical_url = source.canonical_url.clone().unwrap_or_default();
     let (_, proposal_id) = service::stage_request(
         persistence.connection(),
         CLIENT,
@@ -836,7 +836,12 @@ fn typed_fill_schema_refuses_unknown_and_malformed_output() {
         "approval": "publish now"
     });
     assert_eq!(
-        service::parse_social_draft_response(&unknown, &channels, grounding),
+        service::parse_social_draft_response(
+            &unknown,
+            &channels,
+            grounding,
+            Some("https://example.com/blog/epoxy-guide"),
+        ),
         Err("social_draft_output_invalid".to_string())
     );
     let malformed = json!({
@@ -844,7 +849,12 @@ fn typed_fill_schema_refuses_unknown_and_malformed_output() {
         "confidence": "high"
     });
     assert_eq!(
-        service::parse_social_draft_response(&malformed, &channels, grounding),
+        service::parse_social_draft_response(
+            &malformed,
+            &channels,
+            grounding,
+            Some("https://example.com/blog/epoxy-guide"),
+        ),
         Err("social_draft_output_invalid".to_string())
     );
 }
@@ -1029,4 +1039,182 @@ fn ungrounded_typed_fill_is_retried_then_refused_without_staging() {
             .expect("proposals")
             .is_empty()
     );
+}
+
+fn adhoc_request(key: &str, link_url: Option<&str>) -> SocialAdhocSourceCreateRequest {
+    SocialAdhocSourceCreateRequest {
+        title: "Closed Christmas Day".to_string(),
+        grounding_text: "The shop is closed December 25. Regular hours resume December 26."
+            .to_string(),
+        link_url: link_url.map(str::to_string),
+        idempotency_key: key.to_string(),
+    }
+}
+
+#[test]
+fn adhoc_source_without_url_stages_grounded_copy_and_skips_tracked_link() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let source = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_adhoc_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &adhoc_request("adhoc-closed", None),
+            1_000,
+        )
+        .expect("ingest adhoc")
+    };
+    assert_eq!(source.source_kind, service::ADHOC_SOURCE_KIND);
+    assert_eq!(source.canonical_url, None);
+    assert_eq!(
+        source.excerpt.as_deref(),
+        Some("The shop is closed December 25. Regular hours resume December 26.")
+    );
+
+    service::set_test_social_draft_responses(vec![json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "We are closed December 25.",
+                "utm_source": "",
+                "utm_medium": "",
+                "utm_campaign": "",
+                "utm_content": null,
+                "source_quotes": ["closed December 25"]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Regular hours resume December 26.",
+                "utm_source": "linkedin",
+                "utm_medium": "social",
+                "utm_campaign": "holiday",
+                "utm_content": null,
+                "source_quotes": ["Regular hours resume December 26"]
+            }
+        ],
+        "confidence": "high"
+    })]);
+    assert!(matches!(
+        service::kickoff_generation(
+            state.clone(),
+            &source.source_id,
+            source.revision,
+            "generate-adhoc-closed",
+            "social_draft_generator",
+            ActorKindDto::System,
+        )
+        .expect("kickoff"),
+        service::GenerationKickoffOutcome::Accepted(_)
+    ));
+    let staged = wait_for_source_status(
+        &state,
+        &source.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let persistence = state.persistence.lock();
+    let proposal = store::get_proposal(
+        persistence.connection_ref(),
+        CLIENT,
+        staged.proposal_id.as_deref().expect("proposal id"),
+    )
+    .expect("read")
+    .expect("proposal");
+    assert_eq!(proposal.proposal.canonical_url, None);
+    assert_eq!(proposal.proposal.targets[0].tracked_url, "");
+    assert_eq!(
+        proposal.proposal.targets[0].text,
+        "We are closed December 25."
+    );
+    assert!(!proposal.proposal.targets[0].text.contains("https://"));
+    assert_eq!(
+        proposal.proposal.targets[0].utm,
+        SocialUtmParameters::default()
+    );
+    assert_eq!(
+        proposal.proposal.targets[1].utm,
+        SocialUtmParameters::default()
+    );
+}
+
+#[test]
+fn adhoc_source_with_link_keeps_tracked_url_and_rejects_identity_drift() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let mut persistence = state.persistence.lock();
+    let source = service::ingest_adhoc_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &adhoc_request("adhoc-offer", Some("https://example.com/holiday-hours")),
+        1_000,
+    )
+    .expect("ingest linked adhoc");
+    assert_eq!(
+        source.canonical_url.as_deref(),
+        Some("https://example.com/holiday-hours")
+    );
+    let replayed = service::ingest_adhoc_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &adhoc_request("adhoc-offer", Some("https://example.com/holiday-hours")),
+        1_100,
+    )
+    .expect("replay");
+    assert_eq!(replayed.revision, source.revision);
+    let err = service::ingest_adhoc_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &adhoc_request("adhoc-offer", Some("https://example.com/other")),
+        1_200,
+    )
+    .expect_err("same key cannot change destination");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code)
+            if code == "social_published_source_identity_changed"
+    ));
+    let other = service::ingest_adhoc_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &adhoc_request("adhoc-offer-new", Some("https://example.com/other")),
+        1_300,
+    )
+    .expect("new key is a new source");
+    assert_ne!(other.source_id, source.source_id);
+    assert_eq!(
+        other.canonical_url.as_deref(),
+        Some("https://example.com/other")
+    );
+}
+
+#[test]
+fn adhoc_stage_rejects_utm_when_there_is_no_destination() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let mut request = stage_request("adhoc-utm-rejected");
+    request.canonical_url.clear();
+    let mut persistence = state.persistence.lock();
+    let err = service::stage_request(
+        persistence.connection(),
+        CLIENT,
+        "user_example",
+        ActorKindDto::Operator,
+        &request,
+        1_000,
+    )
+    .expect_err("utm without destination");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_utm_without_destination"
+    ));
 }
