@@ -467,6 +467,13 @@ pub fn ingest_adhoc_source_request(
         "social_adhoc_grounding_invalid",
     )?;
     let canonical_url = optional_canonical_url(request.link_url.as_deref())?;
+    let image_url = match clean_optional(request.image_url.as_deref()) {
+        Some(url) => {
+            require_https_url(&url, "social_image_url_invalid")?;
+            Some(url)
+        }
+        None => None,
+    };
     let external_id = bounded_text(&request.idempotency_key, 300, "social_external_id_invalid")?;
     let source_id = source_id_for(client_id, ADHOC_SOURCE_KIND, &external_id);
     let source = SocialPublishedSource {
@@ -479,7 +486,7 @@ pub fn ingest_adhoc_source_request(
         canonical_url,
         excerpt: Some(grounding),
         published_at: None,
-        image_url: None,
+        image_url,
         generation_status: SocialSourceGenerationStatus::Ready,
         generation_run_id: None,
         generation_error: None,

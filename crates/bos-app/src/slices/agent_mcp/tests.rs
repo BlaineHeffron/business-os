@@ -426,6 +426,16 @@ fn social_tool_is_published_content_ingress_only_and_stamps_agent_provenance() {
     assert!(ingest_schema["inputSchema"]["properties"]
         .get("image_url")
         .is_some());
+    let adhoc_schema = manifest["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "bos_social_adhoc_source_create")
+        .expect("adhoc tool");
+    assert_eq!(adhoc_schema["inputSchema"]["additionalProperties"], false);
+    assert!(adhoc_schema["inputSchema"]["properties"]
+        .get("image_url")
+        .is_some());
     assert!(!tool_names
         .iter()
         .any(|name| name.contains("proposal_stage")));
@@ -550,10 +560,15 @@ fn social_adhoc_tool_rejects_copy_fields_and_stamps_agent_provenance() {
         json!({
             "title": "Closed Christmas Day",
             "grounding_text": "The shop is closed December 25.",
+            "image_url": "https://cdn.example.com/announcement.jpg",
             "idempotency_key": "agent-adhoc-1"
         }),
     )
     .expect("create adhoc source");
+    assert_eq!(
+        result["structuredContent"]["source"]["image_url"],
+        "https://cdn.example.com/announcement.jpg"
+    );
     assert_eq!(result["structuredContent"]["approval_required"], true);
     assert_eq!(
         result["structuredContent"]["provider_write"],

@@ -407,6 +407,7 @@ fn tools_for_state(state: &AppState, capabilities: &TokenCapabilities) -> Vec<Va
                     "title": { "type": "string", "description": "Short topic or title for the one-off post." },
                     "grounding_text": { "type": "string", "description": "Factual basis quotes must come from. Not the post copy." },
                     "link_url": { "type": "string", "description": "Optional https destination URL. Omit for posts with no link." },
+                    "image_url": { "type": "string", "description": "Optional public HTTPS image for the one-off post. Copied onto drafted targets as the starting image." },
                     "idempotency_key": { "type": "string" }
                 },
                 "required": ["title", "grounding_text", "idempotency_key"],
