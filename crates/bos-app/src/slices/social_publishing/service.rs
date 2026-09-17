@@ -523,7 +523,11 @@ fn persist_source_metadata(
             current.title = source.title.clone();
             current.excerpt = source.excerpt.clone();
             current.published_at = source.published_at.clone();
-            current.image_url = source.image_url.clone();
+            // Omitted image_url must not wipe a previously stored og:image.
+            // Watchers retry without the field against older deploys.
+            if source.image_url.is_some() {
+                current.image_url = source.image_url.clone();
+            }
             (current, Some(expected_revision))
         }
         None => (source.clone(), None),

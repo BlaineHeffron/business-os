@@ -133,7 +133,8 @@ pub fn ingest_source(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'ready', ?12, ?12) \
                  ON CONFLICT(client_id, source_id) DO UPDATE SET \
                    title = excluded.title, excerpt = excluded.excerpt, \
-                   published_at = excluded.published_at, image_url = excluded.image_url, \
+                   published_at = excluded.published_at, \
+                   image_url = COALESCE(excluded.image_url, social_published_sources.image_url), \
                    updated_at_ms = excluded.updated_at_ms",
                 params![
                     owned_client,

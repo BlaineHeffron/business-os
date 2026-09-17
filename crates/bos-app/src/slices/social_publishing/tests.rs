@@ -1152,6 +1152,7 @@ fn ingest_image_url_is_copied_onto_drafted_targets() {
     )
     .expect("proposal read")
     .expect("proposal");
+    assert_eq!(proposal.proposal.targets.len(), 2);
     assert!(proposal.proposal.targets.iter().all(|target| {
         target.image_url.as_deref() == Some("https://cdn.example.com/blog_image/hero")
     }));
@@ -1180,6 +1181,71 @@ fn ingest_rejects_non_https_image_url() {
         store::list_sources(persistence.connection_ref(), CLIENT, 10)
             .expect("sources")
             .is_empty()
+    );
+}
+
+#[test]
+fn reingress_without_image_url_preserves_existing_image() {
+    let state = test_state();
+    let mut request = ingress_request("keep-image", "ingress-keep-image");
+    request.image_url = Some("https://cdn.example.com/blog_image/hero".to_string());
+    let mut persistence = state.persistence.lock();
+    service::ingest_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &request,
+        1_000,
+    )
+    .expect("ingest");
+    let mut refresh = ingress_request("keep-image", "ingress-keep-image-refresh");
+    refresh.title = "Updated title".to_string();
+    let refreshed = service::ingest_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &refresh,
+        2_000,
+    )
+    .expect("refresh");
+    assert_eq!(refreshed.title, "Updated title");
+    assert_eq!(
+        refreshed.image_url.as_deref(),
+        Some("https://cdn.example.com/blog_image/hero")
+    );
+}
+
+#[test]
+fn reingress_with_image_url_replaces_existing_image() {
+    let state = test_state();
+    let mut request = ingress_request("replace-image", "ingress-replace-image");
+    request.image_url = Some("https://cdn.example.com/blog_image/old".to_string());
+    let mut persistence = state.persistence.lock();
+    service::ingest_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &request,
+        1_000,
+    )
+    .expect("ingest");
+    let mut refresh = ingress_request("replace-image", "ingress-replace-image-refresh");
+    refresh.image_url = Some("https://cdn.example.com/blog_image/new".to_string());
+    let refreshed = service::ingest_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &refresh,
+        2_000,
+    )
+    .expect("refresh");
+    assert_eq!(
+        refreshed.image_url.as_deref(),
+        Some("https://cdn.example.com/blog_image/new")
     );
 }
 
