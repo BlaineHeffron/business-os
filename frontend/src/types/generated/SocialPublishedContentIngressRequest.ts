@@ -4,4 +4,8 @@
  * Narrow CMS/OpenClaw boundary: published-content identity and metadata only.
  * Social copy and provider-write fields are intentionally absent.
  */
-export type SocialPublishedContentIngressRequest = { source_kind: string, external_id: string, source_content_draft_id: string | null, canonical_url: string, title: string, excerpt: string | null, published_at: string | null, idempotency_key: string, };
+export type SocialPublishedContentIngressRequest = { source_kind: string, external_id: string, source_content_draft_id: string | null, canonical_url: string, title: string, excerpt: string | null, published_at: string | null,
+/**
+ * Optional public HTTPS image from the published article (og:image).
+ */
+image_url: string | null, idempotency_key: string, };

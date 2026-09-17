@@ -620,6 +620,7 @@ fn ingress_request(external_id: &str, key: &str) -> SocialPublishedContentIngres
         title: "How to prepare an epoxy floor".to_string(),
         excerpt: Some("Diamond grinding removes weak concrete before epoxy coating.".to_string()),
         published_at: Some("2026-08-12T14:00:00Z".to_string()),
+        image_url: None,
         idempotency_key: key.to_string(),
     }
 }
@@ -1082,6 +1083,104 @@ fn bos_typed_transform_stages_valid_grounded_campaign_without_channel_ids_in_pro
         .query_row("SELECT COUNT(*) FROM outbox_jobs", [], |row| row.get(0))
         .expect("job count");
     assert_eq!(job_count, 0, "AI staging cannot publish");
+}
+
+#[test]
+fn ingest_image_url_is_copied_onto_drafted_targets() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let mut request = ingress_request("hero-image", "ingress-hero-image");
+    request.image_url = Some("https://cdn.example.com/blog_image/hero".to_string());
+    let source = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &request,
+            1_000,
+        )
+        .expect("ingest")
+    };
+    assert_eq!(
+        source.image_url.as_deref(),
+        Some("https://cdn.example.com/blog_image/hero")
+    );
+    service::set_test_social_draft_responses(vec![json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "Prepare concrete before the epoxy coating.",
+                "utm_source": "linkedin",
+                "utm_medium": "social",
+                "utm_campaign": "epoxy_guide",
+                "utm_content": "article",
+                "source_quotes": ["before epoxy coating"]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Diamond grinding removes weak concrete.",
+                "utm_source": "x",
+                "utm_medium": "social",
+                "utm_campaign": "epoxy_guide",
+                "utm_content": null,
+                "source_quotes": ["Diamond grinding removes weak concrete"]
+            }
+        ],
+        "confidence": "high"
+    })]);
+    service::kickoff_generation(
+        state.clone(),
+        &source.source_id,
+        source.revision,
+        "generate-hero-image",
+        "user_example",
+        ActorKindDto::Operator,
+    )
+    .expect("kickoff");
+    let completed = wait_for_source_status(
+        &state,
+        &source.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let persistence = state.persistence.lock();
+    let proposal = store::get_proposal(
+        persistence.connection_ref(),
+        CLIENT,
+        completed.proposal_id.as_deref().expect("proposal id"),
+    )
+    .expect("proposal read")
+    .expect("proposal");
+    assert!(proposal.proposal.targets.iter().all(|target| {
+        target.image_url.as_deref() == Some("https://cdn.example.com/blog_image/hero")
+    }));
+}
+
+#[test]
+fn ingest_rejects_non_https_image_url() {
+    let state = test_state();
+    let mut request = ingress_request("bad-image", "ingress-bad-image");
+    request.image_url = Some("http://cdn.example.com/blog_image/hero".to_string());
+    let mut persistence = state.persistence.lock();
+    let err = service::ingest_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &request,
+        1_000,
+    )
+    .expect_err("http image");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_image_url_invalid"
+    ));
+    assert!(
+        store::list_sources(persistence.connection_ref(), CLIENT, 10)
+            .expect("sources")
+            .is_empty()
+    );
 }
 
 #[test]
