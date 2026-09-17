@@ -1413,6 +1413,7 @@ fn adhoc_request(key: &str, link_url: Option<&str>) -> SocialAdhocSourceCreateRe
         grounding_text: "The shop is closed December 25. Regular hours resume December 26."
             .to_string(),
         link_url: link_url.map(str::to_string),
+        image_url: None,
         idempotency_key: key.to_string(),
     }
 }
@@ -1583,4 +1584,114 @@ fn adhoc_stage_rejects_utm_when_there_is_no_destination() {
         err,
         crate::store_core::StoreError::Domain(code) if code == "social_utm_without_destination"
     ));
+}
+
+#[test]
+fn adhoc_image_url_is_copied_onto_drafted_targets() {
+    let _env = EnvGuard::set(
+        "BOS_BUFFER_CHANNELS_JSON",
+        r#"[
+          {"channel_id":"buf_instagram","name":"Company Instagram","platform":"instagram"},
+          {"channel_id":"buf_linkedin","name":"Company LinkedIn","platform":"linkedin"}
+        ]"#,
+    );
+    let state = test_state();
+    let mut request = adhoc_request("adhoc-hero-image", None);
+    request.image_url = Some("https://cdn.example.com/announcement.jpg".to_string());
+    let source = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_adhoc_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &request,
+            1_000,
+        )
+        .expect("ingest adhoc")
+    };
+    assert_eq!(
+        source.image_url.as_deref(),
+        Some("https://cdn.example.com/announcement.jpg")
+    );
+    service::set_test_social_draft_responses(vec![json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "We are closed December 25.",
+                "utm_source": "",
+                "utm_medium": "",
+                "utm_campaign": "",
+                "utm_content": null,
+                "source_quotes": ["closed December 25"]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Regular hours resume December 26.",
+                "utm_source": "",
+                "utm_medium": "",
+                "utm_campaign": "",
+                "utm_content": null,
+                "source_quotes": ["Regular hours resume December 26"]
+            }
+        ],
+        "confidence": "high"
+    })]);
+    service::kickoff_generation(
+        state.clone(),
+        &source.source_id,
+        source.revision,
+        "generate-adhoc-hero-image",
+        "social_draft_generator",
+        ActorKindDto::System,
+    )
+    .expect("kickoff");
+    let completed = wait_for_source_status(
+        &state,
+        &source.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let persistence = state.persistence.lock();
+    let proposal = store::get_proposal(
+        persistence.connection_ref(),
+        CLIENT,
+        completed.proposal_id.as_deref().expect("proposal id"),
+    )
+    .expect("proposal read")
+    .expect("proposal");
+    assert_eq!(proposal.proposal.targets.len(), 2);
+    assert!(proposal
+        .proposal
+        .targets
+        .iter()
+        .any(|target| target.platform == "instagram"));
+    assert!(proposal.proposal.targets.iter().all(|target| {
+        target.image_url.as_deref() == Some("https://cdn.example.com/announcement.jpg")
+    }));
+}
+
+#[test]
+fn adhoc_rejects_non_https_image_url() {
+    let state = test_state();
+    let mut request = adhoc_request("adhoc-bad-image", None);
+    request.image_url = Some("http://cdn.example.com/announcement.jpg".to_string());
+    let mut persistence = state.persistence.lock();
+    let err = service::ingest_adhoc_source_request(
+        persistence.connection(),
+        CLIENT,
+        "mcp:openclaw",
+        ActorKindDto::Agent,
+        &request,
+        1_000,
+    )
+    .expect_err("http image");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_image_url_invalid"
+    ));
+    assert!(
+        store::list_sources(persistence.connection_ref(), CLIENT, 10)
+            .expect("sources")
+            .is_empty()
+    );
 }

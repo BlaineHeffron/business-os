@@ -215,8 +215,9 @@ pub struct SocialPublishedContentIngressRequest {
     pub idempotency_key: String,
 }
 
-/// Agent-safe one-off source with no published article. Identity and grounding
-/// only; copy, channels, approval, and provider-write fields are absent.
+/// Agent-safe one-off source with no published article. Identity, grounding,
+/// and optional source image only; copy, channels, approval, and provider-write
+/// fields are absent.
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,6 +228,9 @@ pub struct SocialAdhocSourceCreateRequest {
     /// Optional destination HTTPS URL. Omitted for posts with no link.
     #[serde(default)]
     pub link_url: Option<String>,
+    /// Optional public HTTPS image copied onto drafted targets as the starting media.
+    #[serde(default)]
+    pub image_url: Option<String>,
     pub idempotency_key: String,
 }
 
