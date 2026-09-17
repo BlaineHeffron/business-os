@@ -22,6 +22,7 @@ use bos_integrations::buffer::{
     self, BufferApprovalMetadata, BufferPostOutboxPayload, BufferScheduleMode, BufferWriteConfig,
     BufferWriteError,
 };
+use bos_integrations::web_page_read::canonicalize;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1109,7 +1110,9 @@ pub fn parse_social_draft_response(
         .eq(&channels.len())
         .then_some(output.targets)
         .ok_or_else(|| "social_draft_target_set_invalid".to_string())?;
-    let grounding_lower = grounding.to_lowercase();
+    // Models re-type apostrophes, dashes, and quotes. Compare both sides under
+    // the same fold the web grounding path uses, computed once per response.
+    let grounding_canonical = canonicalize(grounding);
     let mut by_ref = BTreeMap::new();
     for target in raw_targets {
         let target_ref = required_draft_text(&target.target_ref, "target_ref")?;
@@ -1133,7 +1136,12 @@ pub fn parse_social_draft_response(
                 let quote = Some(quote.trim())
                     .filter(|quote| (5..=500).contains(&quote.chars().count()))
                     .ok_or_else(|| "social_draft_grounding_invalid".to_string())?;
-                if !grounding_lower.contains(&quote.to_lowercase()) {
+                let quote_canonical = canonicalize(quote);
+                // Fold can shrink ZWSP-padded quotes below the 5-char floor,
+                // and "" is a substring of every haystack.
+                if quote_canonical.chars().count() < 5
+                    || !grounding_canonical.contains(&quote_canonical)
+                {
                     return Err("social_draft_grounding_invalid".to_string());
                 }
             }

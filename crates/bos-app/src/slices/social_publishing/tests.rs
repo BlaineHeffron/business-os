@@ -906,6 +906,104 @@ fn typed_fill_schema_refuses_unknown_and_malformed_output() {
     );
 }
 
+/// Invented listing copy carrying the typography a CMS actually emits: a curly
+/// apostrophe, a non-breaking hyphen, an en dash, an em dash, curly double
+/// quotes, a no-break space, and a named HTML entity.
+const TYPOGRAPHIC_GROUNDING: &str = concat!(
+    "Fully equipped chef\u{2019}s kitchens for preparing family-style meals. ",
+    "Pet\u{2011}friendly suites sleep 12\u{2013}14 guests \u{2014} ideal for large groups. ",
+    "Guests call it \u{201c}the calmest week of the year\u{201d}. ",
+    "Check-in\u{00a0}from 4 PM. ",
+    "Catering by Smith &amp; Jones.",
+);
+
+const TYPOGRAPHIC_GROUNDING_URL: &str = "https://example.com/stays/lakeside-lodge";
+
+fn draft_response_quoting(quote: &str) -> serde_json::Value {
+    json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "Lakeside lodge copy.",
+                "utm_source": "linkedin",
+                "utm_medium": "social",
+                "utm_campaign": "lakeside_lodge",
+                "utm_content": "listing",
+                "source_quotes": [quote]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Lakeside lodge copy.",
+                "utm_source": "x",
+                "utm_medium": "social",
+                "utm_campaign": "lakeside_lodge",
+                "utm_content": null,
+                "source_quotes": [quote]
+            }
+        ],
+        "confidence": "high"
+    })
+}
+
+#[test]
+fn grounding_quotes_survive_model_typographic_normalization() {
+    let channels: Vec<bos_contracts::social_publishing::SocialPublishingChannel> =
+        serde_json::from_str(CHANNELS).expect("channels");
+    for (case, quote) in [
+        (
+            "curly apostrophe",
+            "chef's kitchens for preparing family-style meals",
+        ),
+        ("non-breaking hyphen", "Pet-friendly suites"),
+        ("en dash", "sleep 12-14 guests"),
+        ("em dash", "guests - ideal for large groups"),
+        ("curly double quotes", "\"the calmest week of the year\""),
+        ("no-break space", "Check-in from 4 PM"),
+        ("html entity ampersand", "Smith & Jones"),
+    ] {
+        let parsed = service::parse_social_draft_response(
+            &draft_response_quoting(quote),
+            &channels,
+            TYPOGRAPHIC_GROUNDING,
+            Some(TYPOGRAPHIC_GROUNDING_URL),
+        );
+        assert!(
+            parsed.is_ok(),
+            "{case}: faithful quote {quote:?} was rejected: {parsed:?}"
+        );
+    }
+}
+
+#[test]
+fn grounding_fold_still_rejects_copy_that_is_not_in_the_source() {
+    let channels: Vec<bos_contracts::social_publishing::SocialPublishingChannel> =
+        serde_json::from_str(CHANNELS).expect("channels");
+    for (case, quote) in [
+        ("paraphrase", "chef-grade kitchens for cooking family meals"),
+        ("invented fact", "free airport shuttle for every guest"),
+        (
+            "reordered words",
+            "kitchens fully equipped for preparing meals",
+        ),
+        (
+            "zero-width padding only",
+            "\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}",
+        ),
+        ("zero-width padded short token", "the\u{200b}\u{200b}"),
+    ] {
+        assert_eq!(
+            service::parse_social_draft_response(
+                &draft_response_quoting(quote),
+                &channels,
+                TYPOGRAPHIC_GROUNDING,
+                Some(TYPOGRAPHIC_GROUNDING_URL),
+            ),
+            Err("social_draft_grounding_invalid".to_string()),
+            "{case}: ungrounded quote {quote:?} was accepted"
+        );
+    }
+}
+
 #[test]
 fn draft_instructions_state_confidence_enum_for_url_and_urlless_sources() {
     let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
