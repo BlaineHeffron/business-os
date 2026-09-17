@@ -391,6 +391,7 @@ fn tools_for_state(state: &AppState, capabilities: &TokenCapabilities) -> Vec<Va
                     "title": { "type": "string" },
                     "excerpt": { "type": "string", "description": "Optional published excerpt/summary used as bounded drafting context." },
                     "published_at": { "type": "string", "description": "Optional RFC3339 publication timestamp." },
+                    "image_url": { "type": "string", "description": "Optional public HTTPS image from the published article (og:image). Copied onto drafted targets as the starting image." },
                     "idempotency_key": { "type": "string" }
                 },
                 "required": ["source_kind", "external_id", "canonical_url", "title", "idempotency_key"],

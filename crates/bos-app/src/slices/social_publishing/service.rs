@@ -164,6 +164,7 @@ pub fn published_sources(
             canonical_url: Some(canonical_url),
             excerpt: None,
             published_at: None,
+            image_url: None,
             generation_status: if proposal_id.is_some() {
                 SocialSourceGenerationStatus::ProposalStaged
             } else {
@@ -401,6 +402,13 @@ pub fn ingest_source_request(
         ),
         None => None,
     };
+    let image_url = match clean_optional(request.image_url.as_deref()) {
+        Some(url) => {
+            require_https_url(&url, "social_image_url_invalid")?;
+            Some(url)
+        }
+        None => None,
+    };
     let canonical_url = Some(normalize_canonical_url(&request.canonical_url)?);
     validate_published_source(
         conn,
@@ -421,6 +429,7 @@ pub fn ingest_source_request(
         canonical_url,
         excerpt,
         published_at,
+        image_url,
         generation_status: SocialSourceGenerationStatus::Ready,
         generation_run_id: None,
         generation_error: None,
@@ -470,6 +479,7 @@ pub fn ingest_adhoc_source_request(
         canonical_url,
         excerpt: Some(grounding),
         published_at: None,
+        image_url: None,
         generation_status: SocialSourceGenerationStatus::Ready,
         generation_run_id: None,
         generation_error: None,
@@ -513,6 +523,11 @@ fn persist_source_metadata(
             current.title = source.title.clone();
             current.excerpt = source.excerpt.clone();
             current.published_at = source.published_at.clone();
+            // Omitted image_url must not wipe a previously stored og:image.
+            // Watchers retry without the field against older deploys.
+            if source.image_url.is_some() {
+                current.image_url = source.image_url.clone();
+            }
             (current, Some(expected_revision))
         }
         None => (source.clone(), None),
@@ -603,6 +618,7 @@ pub fn kickoff_draft_preview_generation(
             canonical_url: Some(canonical_url),
             excerpt: entry.draft.meta_description,
             published_at: None,
+            image_url: None,
             generation_status: SocialSourceGenerationStatus::Ready,
             generation_run_id: None,
             generation_error: None,
@@ -856,7 +872,7 @@ fn execute_source_generation(
                 continue;
             }
         };
-        let targets = match parse_social_draft_response(
+        let mut targets = match parse_social_draft_response(
             &envelope.response_json,
             &channels,
             &grounding,
@@ -868,6 +884,11 @@ fn execute_source_generation(
                 continue;
             }
         };
+        if let Some(image_url) = source.image_url.clone() {
+            for target in &mut targets {
+                target.image_url = Some(image_url.clone());
+            }
+        }
         let request = SocialProposalStageRequest {
             source_id: Some(source.source_id.clone()),
             source_content_draft_id: source.source_content_draft_id.clone(),

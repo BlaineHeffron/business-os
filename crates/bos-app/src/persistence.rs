@@ -475,6 +475,10 @@ const MIGRATION_SOURCES: &[(&str, &str)] = &[
         "0115_social_adhoc_nullable_canonical",
         include_str!("persistence/migrations/0115_social_adhoc_nullable_canonical.sql"),
     ),
+    (
+        "0116_social_published_source_image_url",
+        include_str!("persistence/migrations/0116_social_published_source_image_url.sql"),
+    ),
 ];
 
 fn migrations() -> Migrations<'static> {

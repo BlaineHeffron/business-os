@@ -5,4 +5,4 @@ export type SocialPublishedSource = { source_id: string, source_kind: string, ex
 /**
  * Canonical published HTTPS URL. Absent for ad-hoc sources with no destination.
  */
-canonical_url?: string | null, excerpt?: string | null, published_at?: string | null, generation_status: SocialSourceGenerationStatus, generation_run_id?: string | null, generation_error?: string | null, proposal_id?: string | null, revision: number, };
+canonical_url?: string | null, excerpt?: string | null, published_at?: string | null, image_url?: string | null, generation_status: SocialSourceGenerationStatus, generation_run_id?: string | null, generation_error?: string | null, proposal_id?: string | null, revision: number, };

@@ -416,6 +416,16 @@ fn social_tool_is_published_content_ingress_only_and_stamps_agent_provenance() {
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"bos_social_published_content_ingest"));
     assert!(tool_names.contains(&"bos_social_adhoc_source_create"));
+    let ingest_schema = manifest["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "bos_social_published_content_ingest")
+        .expect("ingest tool");
+    assert_eq!(ingest_schema["inputSchema"]["additionalProperties"], false);
+    assert!(ingest_schema["inputSchema"]["properties"]
+        .get("image_url")
+        .is_some());
     assert!(!tool_names
         .iter()
         .any(|name| name.contains("proposal_stage")));
@@ -456,10 +466,15 @@ fn social_tool_is_published_content_ingress_only_and_stamps_agent_provenance() {
             "external_id": "post-42",
             "canonical_url": "https://example.com/blog/post",
             "title": "Published article",
+            "image_url": "https://cdn.example.com/blog_image/hero",
             "idempotency_key": "agent-social-1"
         }),
     )
     .expect("ingest published content");
+    assert_eq!(
+        result["structuredContent"]["source"]["image_url"],
+        "https://cdn.example.com/blog_image/hero"
+    );
     assert_eq!(result["structuredContent"]["approval_required"], true);
     assert_eq!(
         result["structuredContent"]["provider_write"],

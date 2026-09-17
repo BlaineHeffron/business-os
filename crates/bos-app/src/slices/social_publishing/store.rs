@@ -38,6 +38,7 @@ fn source_from_row(row: &Row<'_>) -> rusqlite::Result<SocialPublishedSource> {
         canonical_url: row.get("canonical_url")?,
         excerpt: row.get("excerpt")?,
         published_at: row.get("published_at")?,
+        image_url: row.get("image_url")?,
         generation_status: source_status_from_str(&row.get::<_, String>("generation_status")?),
         generation_run_id: row.get("generation_run_id")?,
         generation_error: row.get("generation_error")?,
@@ -48,7 +49,7 @@ fn source_from_row(row: &Row<'_>) -> rusqlite::Result<SocialPublishedSource> {
 
 const SOURCE_SELECT_COLUMNS: &str = "s.source_id, s.source_kind, s.external_id, \
     s.source_content_draft_id, s.source_content_draft_revision, s.title, s.canonical_url, s.excerpt, s.published_at, \
-    s.generation_status, s.generation_run_id, s.generation_error, s.proposal_id, \
+    s.image_url, s.generation_status, s.generation_run_id, s.generation_error, s.proposal_id, \
     COALESCE(er.revision, 0) AS revision";
 
 pub fn list_sources(
@@ -127,12 +128,14 @@ pub fn ingest_source(
             tx.execute(
                 "INSERT INTO social_published_sources \
                  (client_id, source_id, source_kind, external_id, source_content_draft_id, source_content_draft_revision, \
-                  canonical_url, title, excerpt, published_at, generation_status, \
+                  canonical_url, title, excerpt, published_at, image_url, generation_status, \
                   created_at_ms, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'ready', ?11, ?11) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'ready', ?12, ?12) \
                  ON CONFLICT(client_id, source_id) DO UPDATE SET \
                    title = excluded.title, excerpt = excluded.excerpt, \
-                   published_at = excluded.published_at, updated_at_ms = excluded.updated_at_ms",
+                   published_at = excluded.published_at, \
+                   image_url = COALESCE(excluded.image_url, social_published_sources.image_url), \
+                   updated_at_ms = excluded.updated_at_ms",
                 params![
                     owned_client,
                     owned.source_id,
@@ -144,6 +147,7 @@ pub fn ingest_source(
                     owned.title,
                     owned.excerpt,
                     owned.published_at,
+                    owned.image_url,
                     ctx.now_ms as i64,
                 ],
             )?;

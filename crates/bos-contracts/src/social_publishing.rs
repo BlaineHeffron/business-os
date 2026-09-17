@@ -143,6 +143,8 @@ pub struct SocialPublishedSource {
     pub excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
     pub generation_status: SocialSourceGenerationStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_run_id: Option<String>,
@@ -207,6 +209,9 @@ pub struct SocialPublishedContentIngressRequest {
     pub excerpt: Option<String>,
     #[serde(default)]
     pub published_at: Option<String>,
+    /// Optional public HTTPS image from the published article (og:image).
+    #[serde(default)]
+    pub image_url: Option<String>,
     pub idempotency_key: String,
 }
 

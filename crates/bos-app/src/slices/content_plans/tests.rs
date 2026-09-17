@@ -1429,6 +1429,7 @@ fn campaign_approval_snapshots_exact_revisions_and_enqueues_blog_only() {
             canonical_url: Some("https://example.com/campaign-guide".to_string()),
             excerpt: approved.draft.meta_description.clone(),
             published_at: None,
+            image_url: None,
             generation_status:
                 bos_contracts::social_publishing::SocialSourceGenerationStatus::Ready,
             generation_run_id: None,
