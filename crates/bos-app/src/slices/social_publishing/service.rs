@@ -402,13 +402,7 @@ pub fn ingest_source_request(
         ),
         None => None,
     };
-    let image_url = match clean_optional(request.image_url.as_deref()) {
-        Some(url) => {
-            require_https_url(&url, "social_image_url_invalid")?;
-            Some(url)
-        }
-        None => None,
-    };
+    let image_url = optional_https_image_url(request.image_url.as_deref())?;
     let canonical_url = Some(normalize_canonical_url(&request.canonical_url)?);
     validate_published_source(
         conn,
@@ -467,13 +461,7 @@ pub fn ingest_adhoc_source_request(
         "social_adhoc_grounding_invalid",
     )?;
     let canonical_url = optional_canonical_url(request.link_url.as_deref())?;
-    let image_url = match clean_optional(request.image_url.as_deref()) {
-        Some(url) => {
-            require_https_url(&url, "social_image_url_invalid")?;
-            Some(url)
-        }
-        None => None,
-    };
+    let image_url = optional_https_image_url(request.image_url.as_deref())?;
     let external_id = bounded_text(&request.idempotency_key, 300, "social_external_id_invalid")?;
     let source_id = source_id_for(client_id, ADHOC_SOURCE_KIND, &external_id);
     let source = SocialPublishedSource {
@@ -1410,13 +1398,7 @@ fn normalize_target(
     if text.chars().count() > MAX_POST_TEXT_CHARS {
         return Err(StoreError::Domain("social_post_text_too_long".to_string()));
     }
-    let image_url = match clean_optional(input.image_url.as_deref()) {
-        Some(url) => {
-            require_https_url(&url, "social_image_url_invalid")?;
-            Some(url)
-        }
-        None => None,
-    };
+    let image_url = optional_https_image_url(input.image_url.as_deref())?;
     let (schedule_mode, due_at) = match input.schedule_mode {
         SocialScheduleMode::Queue => {
             if clean_optional(input.due_at.as_deref()).is_some() {
@@ -1740,6 +1722,16 @@ fn bounded_optional(raw: Option<&str>, field: &str) -> Result<Option<String>, St
         return Err(StoreError::Domain(format!("social_{field}_too_long")));
     }
     Ok(value)
+}
+
+fn optional_https_image_url(raw: Option<&str>) -> Result<Option<String>, StoreError> {
+    match clean_optional(raw) {
+        Some(url) => {
+            require_https_url(&url, "social_image_url_invalid")?;
+            Ok(Some(url))
+        }
+        None => Ok(None),
+    }
 }
 
 fn require_https_url(raw: &str, code: &str) -> Result<(), StoreError> {

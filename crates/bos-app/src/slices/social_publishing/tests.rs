@@ -1490,7 +1490,13 @@ fn adhoc_stage_rejects_utm_when_there_is_no_destination() {
 
 #[test]
 fn adhoc_image_url_is_copied_onto_drafted_targets() {
-    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let _env = EnvGuard::set(
+        "BOS_BUFFER_CHANNELS_JSON",
+        r#"[
+          {"channel_id":"buf_instagram","name":"Company Instagram","platform":"instagram"},
+          {"channel_id":"buf_linkedin","name":"Company LinkedIn","platform":"linkedin"}
+        ]"#,
+    );
     let state = test_state();
     let mut request = adhoc_request("adhoc-hero-image", None);
     request.image_url = Some("https://cdn.example.com/announcement.jpg".to_string());
@@ -1556,6 +1562,11 @@ fn adhoc_image_url_is_copied_onto_drafted_targets() {
     .expect("proposal read")
     .expect("proposal");
     assert_eq!(proposal.proposal.targets.len(), 2);
+    assert!(proposal
+        .proposal
+        .targets
+        .iter()
+        .any(|target| target.platform == "instagram"));
     assert!(proposal.proposal.targets.iter().all(|target| {
         target.image_url.as_deref() == Some("https://cdn.example.com/announcement.jpg")
     }));
