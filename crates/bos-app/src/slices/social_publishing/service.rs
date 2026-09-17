@@ -1110,17 +1110,8 @@ pub fn parse_social_draft_response(
         .eq(&channels.len())
         .then_some(output.targets)
         .ok_or_else(|| "social_draft_target_set_invalid".to_string())?;
-    // Models re-type source copy in their own typography, so a faithful quote
-    // comes back with U+0027 where the page has U+2019, ASCII '-' where the page
-    // has U+2011/U+2013/U+2014, and straight quotes for curly ones. NFKC alone
-    // leaves every one of those distinct -- it folds NBSP and the ellipsis but
-    // not the apostrophe, dash, or quote families -- so containment runs over
-    // the same canonical form the web grounding check already uses: NFKC plus an
-    // explicit punctuation and whitespace fold, then casefold. Canonicalizing
-    // only re-encodes the same characters, so the span stays verbatim; a
-    // similarity threshold would instead let a paraphrase through, which is the
-    // failure this check exists to catch. Fold the grounding once per response
-    // rather than once per quote.
+    // Models re-type apostrophes, dashes, and quotes. Compare both sides under
+    // the same fold the web grounding path uses, computed once per response.
     let grounding_canonical = canonicalize(grounding);
     let mut by_ref = BTreeMap::new();
     for target in raw_targets {
@@ -1145,11 +1136,12 @@ pub fn parse_social_draft_response(
                 let quote = Some(quote.trim())
                     .filter(|quote| (5..=500).contains(&quote.chars().count()))
                     .ok_or_else(|| "social_draft_grounding_invalid".to_string())?;
-                // A quote built only from zero-width or whitespace characters
-                // clears the length bound but folds to "", and every haystack
-                // contains the empty string.
                 let quote_canonical = canonicalize(quote);
-                if quote_canonical.is_empty() || !grounding_canonical.contains(&quote_canonical) {
+                // Fold can shrink ZWSP-padded quotes below the 5-char floor,
+                // and "" is a substring of every haystack.
+                if quote_canonical.chars().count() < 5
+                    || !grounding_canonical.contains(&quote_canonical)
+                {
                     return Err("social_draft_grounding_invalid".to_string());
                 }
             }
