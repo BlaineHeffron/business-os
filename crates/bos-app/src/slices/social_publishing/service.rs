@@ -30,7 +30,9 @@ use sha2::{Digest, Sha256};
 
 use super::store;
 use crate::env_registry;
-use crate::outbox::{retry_backoff_ms, AttemptOutcome, ClaimedJob, NewOutboxJob};
+use crate::outbox::{
+    provider_error_detail, retry_backoff_ms, AttemptOutcome, ClaimedJob, NewOutboxJob,
+};
 use crate::slices::async_kickoff::{
     KickoffCapacity, KickoffDecision, KickoffSpec, RecordedKickoff,
 };
@@ -1774,20 +1776,20 @@ fn buffer_error_outcome(err: BufferWriteError, attempts: u32, now_ms: u64) -> At
     match err {
         BufferWriteError::Retryable {
             code,
+            message,
             retry_after_secs,
-            ..
         } => AttemptOutcome::Retry {
-            error: code,
+            error: provider_error_detail(&code, &message),
             retry_at_ms: retry_after_secs
                 .map(|seconds| now_ms.saturating_add(seconds.saturating_mul(1_000)))
                 .unwrap_or_else(|| now_ms.saturating_add(retry_backoff_ms(attempts))),
         },
-        BufferWriteError::Permanent { code, .. } => AttemptOutcome::Terminal {
-            error: code,
+        BufferWriteError::Permanent { code, message } => AttemptOutcome::Terminal {
+            error: provider_error_detail(&code, &message),
             result_json: None,
         },
-        BufferWriteError::OutcomeUnknown { code, .. } => AttemptOutcome::OutcomeUnknown {
-            error: code,
+        BufferWriteError::OutcomeUnknown { code, message } => AttemptOutcome::OutcomeUnknown {
+            error: provider_error_detail(&code, &message),
             result_json: Some(
                 serde_json::json!({
                     "delivery_outcome_unknown": true,
