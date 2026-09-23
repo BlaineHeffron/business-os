@@ -278,16 +278,6 @@ export const api = {
     );
   },
 
-  redraftSocialProposal(
-    proposalId: string,
-    body: Omit<SocialProposalActionRequest, "action">,
-  ): Promise<SocialGenerationResponse> {
-    return request(
-      `/api/social-publishing/proposals/${encodeURIComponent(proposalId)}/action`,
-      { method: "POST", body: JSON.stringify({ ...body, action: "redraft" }) },
-    );
-  },
-
   generateSocialProposal(
     sourceId: string,
     body: SocialProposalGenerateRequest,

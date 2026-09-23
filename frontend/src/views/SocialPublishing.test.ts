@@ -3,6 +3,8 @@ import type { SocialPostProposalWithRevision } from "../types/generated/SocialPo
 import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
 import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
 import {
+  approveBlockedReason,
+  decisionNotice,
   nextSocialProposalId,
   proposalListLabel,
   targetInput,
@@ -190,5 +192,22 @@ describe("url-less target UTM", () => {
     expect(trackedUrlLabel("https://example.com/post")).toBe(
       "https://example.com/post",
     );
+  });
+});
+
+describe("decisionNotice", () => {
+  it("describes each decision, including live versus dry-run approval", () => {
+    expect(decisionNotice("approve", true)).toMatch(/queued independently/);
+    expect(decisionNotice("approve", false)).toMatch(/dry-run/);
+    expect(decisionNotice("reject", true)).toBe("Proposal rejected.");
+    expect(decisionNotice("redraft", false)).toMatch(/re-drafting under the current Buffer channels/);
+  });
+});
+
+describe("approveBlockedReason", () => {
+  it("explains why approval is disabled, unsaved edits first", () => {
+    expect(approveBlockedReason(true, false)).toBe("Save changes before approval");
+    expect(approveBlockedReason(false, false)).toBe("Instagram needs a public image before approval");
+    expect(approveBlockedReason(false, true)).toBeUndefined();
   });
 });
