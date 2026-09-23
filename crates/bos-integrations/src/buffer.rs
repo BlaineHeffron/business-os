@@ -525,7 +525,7 @@ pub fn validate_payload(payload: &BufferPostOutboxPayload) -> Result<(), BufferW
         BufferScheduleMode::Queue | BufferScheduleMode::Draft if payload.due_at.is_some() => {
             Err(permanent(
                 "buffer_queue_due_at_invalid",
-                "queue mode cannot carry due_at",
+                "queue and draft modes cannot carry due_at",
             ))
         }
         BufferScheduleMode::Scheduled

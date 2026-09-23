@@ -59,7 +59,7 @@ pub struct SocialProposalTargetInput {
     #[serde(default)]
     pub utm: SocialUtmParameters,
     pub schedule_mode: SocialScheduleMode,
-    /// Required for scheduled mode; absent for queue mode. RFC3339 with offset.
+    /// Required for scheduled mode; absent for queue and draft modes. RFC3339 with offset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<String>,
 }

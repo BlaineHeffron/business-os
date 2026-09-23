@@ -7,6 +7,7 @@ import {
   decisionNotice,
   nextSocialProposalId,
   proposalListLabel,
+  scheduleModeLabel,
   targetInput,
   targetReadyForProvider,
   targetRequest,
@@ -209,5 +210,19 @@ describe("approveBlockedReason", () => {
     expect(approveBlockedReason(true, false)).toBe("Save changes before approval");
     expect(approveBlockedReason(false, false)).toBe("Instagram needs a public image before approval");
     expect(approveBlockedReason(false, true)).toBeUndefined();
+  });
+});
+
+describe("scheduleModeLabel", () => {
+  it("labels queue, draft, and scheduled modes", () => {
+    expect(scheduleModeLabel("queue", null, "Your time · UTC")).toBe(
+      "Next Buffer queue slot",
+    );
+    expect(scheduleModeLabel("draft", "2026-08-20T14:00:00Z", "Your time · UTC")).toBe(
+      "Buffer draft (not scheduled)",
+    );
+    expect(
+      scheduleModeLabel("scheduled", "2026-08-20T14:00:00Z", "Your time · UTC"),
+    ).toMatch(/Your time · UTC/);
   });
 });

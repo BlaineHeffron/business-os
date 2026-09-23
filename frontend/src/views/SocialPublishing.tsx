@@ -8,6 +8,7 @@ import type { SocialProposalStatus } from "../types/generated/SocialProposalStat
 import type { SocialProposalTargetInput } from "../types/generated/SocialProposalTargetInput";
 import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
 import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
+import type { SocialScheduleMode } from "../types/generated/SocialScheduleMode";
 import type { SocialUtmParameters } from "../types/generated/SocialUtmParameters";
 
 type Notice = { kind: "success" | "error" | "conflict"; text: string } | null;
@@ -201,6 +202,16 @@ export function nextSocialProposalId(
 function browserTimeZoneLabel(): string {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return zone ? `Your time · ${zone}` : "Your local time";
+}
+
+export function scheduleModeLabel(
+  mode: SocialScheduleMode,
+  dueAt: string | null | undefined,
+  timeZone = browserTimeZoneLabel(),
+): string {
+  if (mode === "queue") return "Next Buffer queue slot";
+  if (mode === "draft") return "Buffer draft (not scheduled)";
+  return `${new Date(dueAt ?? "").toLocaleString()} · ${timeZone}`;
 }
 
 export default function SocialPublishing({
@@ -842,11 +853,7 @@ export default function SocialPublishing({
                       <div>
                         <dt className="text-zinc-400">Schedule</dt>
                         <dd className="text-zinc-300">
-                          {stored.schedule_mode === "queue"
-                            ? "Next Buffer queue slot"
-                            : stored.schedule_mode === "draft"
-                              ? "Buffer draft (not scheduled)"
-                              : `${new Date(stored.due_at ?? "").toLocaleString()} · ${browserTimeZoneLabel()}`}
+                          {scheduleModeLabel(stored.schedule_mode, stored.due_at)}
                         </dd>
                       </div>
                     </dl>

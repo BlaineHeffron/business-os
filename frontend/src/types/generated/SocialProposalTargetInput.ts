@@ -8,6 +8,6 @@ import type { SocialUtmParameters } from "./SocialUtmParameters";
  */
 export type SocialProposalTargetInput = { channel_id: string, text: string, image_url?: string | null, utm: SocialUtmParameters, schedule_mode: SocialScheduleMode,
 /**
- * Required for scheduled mode; absent for queue mode. RFC3339 with offset.
+ * Required for scheduled mode; absent for queue and draft modes. RFC3339 with offset.
  */
 due_at?: string | null, };
