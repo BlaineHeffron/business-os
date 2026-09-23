@@ -346,10 +346,13 @@ struct Rule {
     kind: &'static str,
     re: &'static Regex,
     template: &'static str,
-    /// Capture group that must contain a digit for the match to count. Prose
-    /// such as "the secret: you're close" has the shape of an assignment but
-    /// a purely alphabetic value; real credential values essentially always
-    /// carry a digit.
+    /// Capture group that must contain a digit for the match to count, but
+    /// only for English-word assignment keys (`password` / `passwd` / `pwd` /
+    /// `secret`). Token-shaped keys (`api_key`, `*_token`, `account_key`,
+    /// `client_secret`) still always count, even with a purely alphabetic
+    /// value, so `api_key=DEADBEEFDEADBEEF` stays redacted. Prose such as
+    /// "the secret: you're close" has the shape of an assignment but a
+    /// purely alphabetic value.
     digit_group: Option<usize>,
 }
 
@@ -459,6 +462,8 @@ fn rules() -> &'static [Rule] {
             // so `order_id=AB12CD34` is untouched but `api_key=AB12CD34` is. The
             // value class excludes brackets so it never re-redacts an existing
             // marker. Keeps the key name for context, redacts the value.
+            // `digit_group` applies only to password/secret (English prose);
+            // api_key / *_token stay strict without a digit in the value.
             Rule {
                 kind: "credential_assignment",
                 re: re(
@@ -493,6 +498,14 @@ pub fn scrub_llm_input(value: &str) -> (String, ScrubReport) {
             .re
             .replace_all(&current, |caps: &regex::Captures<'_>| {
                 let counts = rule.digit_group.is_none_or(|group| {
+                    let english_key = caps.get(1).is_some_and(|key| {
+                        ["password", "passwd", "pwd", "secret"]
+                            .iter()
+                            .any(|k| key.as_str().eq_ignore_ascii_case(k))
+                    });
+                    if !english_key {
+                        return true;
+                    }
                     caps.get(group)
                         .is_some_and(|m| m.as_str().chars().any(|ch| ch.is_ascii_digit()))
                 });
@@ -908,6 +921,16 @@ mod tests {
         assert_eq!(
             scrubbed,
             "secret: [REDACTED:credential_assignment] and api_key=[REDACTED:credential_assignment]"
+        );
+        assert_eq!(report.by_kind.get("credential_assignment"), Some(&2));
+
+        // Token-shaped keys stay strict without a digit. English-word keys
+        // without a digit still pass (`password=letmein`).
+        let (scrubbed, report) =
+            scrub_llm_input("api_key=DEADBEEFDEADBEEF password=letmein client_secret=abcdef");
+        assert_eq!(
+            scrubbed,
+            "api_key=[REDACTED:credential_assignment] password=letmein client_secret=[REDACTED:credential_assignment]"
         );
         assert_eq!(report.by_kind.get("credential_assignment"), Some(&2));
     }
