@@ -213,6 +213,141 @@ pub fn begin_generation(
     )
 }
 
+const SOURCE_RESET_SQL: &str = "UPDATE social_published_sources SET generation_status = 'ready', \
+     generation_run_id = NULL, generation_error = NULL, proposal_id = NULL, updated_at_ms = ?4 \
+     WHERE client_id = ?1 AND source_id = ?2 AND proposal_id = ?3 \
+       AND generation_status IN ('proposal_staged', 'generation_failed')";
+
+/// Reject a staged proposal and return its source to `ready` in one
+/// transaction, so a fresh generation can begin under the current channel
+/// configuration. Either both rows change or neither does; the receipt is
+/// recorded on the proposal and correlated to the source.
+pub fn redraft_proposal(
+    conn: &mut Connection,
+    ctx: MutationContext<'_>,
+    actor_kind: ActorKindDto,
+    proposal_id: &str,
+    source_id: &str,
+    source_revision: u64,
+) -> Result<MutationOutcome, StoreError> {
+    require_expected_revision(ctx.expected_revision)?;
+    let current = get_proposal(conn, ctx.client_id, proposal_id)?
+        .ok_or_else(|| StoreError::Domain("social_proposal_not_found".to_string()))?;
+    if Some(current.revision) == ctx.expected_revision
+        && current.proposal.status != SocialProposalStatus::Staged
+    {
+        return Err(StoreError::Domain("social_proposal_not_staged".to_string()));
+    }
+    let owned_client = ctx.client_id.to_string();
+    let owned_proposal = proposal_id.to_string();
+    let owned_source = source_id.to_string();
+    store_core::mutate(
+        conn,
+        MutationRequest {
+            client_id: ctx.client_id,
+            entity_kind: PROPOSAL_ENTITY_KIND,
+            entity_id: proposal_id,
+            change_kind: "redraft",
+            actor_id: ctx.actor_id,
+            actor_kind,
+            expected_revision: ctx.expected_revision,
+            idempotency_key: ctx.idempotency_key,
+            correlation_id: Some(source_id),
+            causation_id: None,
+            before_json: None,
+            after_json: Some(
+                serde_json::json!({ "status": "rejected", "source_generation_status": "ready" })
+                    .to_string(),
+            ),
+            now_ms: ctx.now_ms,
+        },
+        move |tx| {
+            let changed = tx.execute(
+                "UPDATE social_post_proposals SET status = 'rejected', updated_at_ms = ?3 \
+                 WHERE client_id = ?1 AND proposal_id = ?2 AND status = 'staged'",
+                params![owned_client, owned_proposal, ctx.now_ms as i64],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::Domain("social_proposal_not_staged".to_string()));
+            }
+            let reset = tx.execute(
+                SOURCE_RESET_SQL,
+                params![
+                    owned_client,
+                    owned_source,
+                    owned_proposal,
+                    ctx.now_ms as i64
+                ],
+            )?;
+            if reset != 1 {
+                return Err(StoreError::Domain(
+                    "social_source_generation_state_invalid".to_string(),
+                ));
+            }
+            store_core::advance_revision_within(
+                tx,
+                &owned_client,
+                SOURCE_ENTITY_KIND,
+                &owned_source,
+                source_revision,
+                ctx.now_ms,
+            )?;
+            Ok(())
+        },
+    )
+}
+
+/// Self-heal for a source still pointing at `proposal_id` after that proposal
+/// was rejected outside `redraft_proposal`: return it to `ready` so it can be
+/// drafted again.
+pub fn reset_generation(
+    conn: &mut Connection,
+    ctx: MutationContext<'_>,
+    actor_kind: ActorKindDto,
+    source_id: &str,
+    proposal_id: &str,
+) -> Result<MutationOutcome, StoreError> {
+    require_expected_revision(ctx.expected_revision)?;
+    let owned_client = ctx.client_id.to_string();
+    let owned_source = source_id.to_string();
+    let owned_proposal = proposal_id.to_string();
+    store_core::mutate(
+        conn,
+        MutationRequest {
+            client_id: ctx.client_id,
+            entity_kind: SOURCE_ENTITY_KIND,
+            entity_id: source_id,
+            change_kind: "generation_reset",
+            actor_id: ctx.actor_id,
+            actor_kind,
+            expected_revision: ctx.expected_revision,
+            idempotency_key: ctx.idempotency_key,
+            correlation_id: Some(source_id),
+            causation_id: Some(proposal_id),
+            before_json: None,
+            after_json: Some(serde_json::json!({ "generation_status": "ready" }).to_string()),
+            now_ms: ctx.now_ms,
+        },
+        move |tx| {
+            let changed = tx.execute(
+                SOURCE_RESET_SQL,
+                params![
+                    owned_client,
+                    owned_source,
+                    owned_proposal,
+                    ctx.now_ms as i64
+                ],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::Domain(
+                    "social_source_generation_state_invalid".to_string(),
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
 pub fn finish_generation(
     conn: &mut Connection,
     ctx: MutationContext<'_>,

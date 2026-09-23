@@ -34,6 +34,28 @@ function destinationLabel(url: string | null | undefined): string | null {
   }
 }
 
+export function approveBlockedReason(
+  hasUnsavedChanges: boolean,
+  targetsReadyForProviders: boolean,
+): string | undefined {
+  if (hasUnsavedChanges) return "Save changes before approval";
+  if (!targetsReadyForProviders) return "Instagram needs a public image before approval";
+  return undefined;
+}
+
+export function decisionNotice(
+  action: "approve" | "reject" | "redraft",
+  liveEnabled: boolean,
+): string {
+  if (action === "redraft") {
+    return "Rejected and re-drafting under the current Buffer channels. A new proposal appears when drafting finishes.";
+  }
+  if (action === "reject") return "Proposal rejected.";
+  return liveEnabled
+    ? "Approved. Each Buffer channel is queued independently."
+    : "Approved. Channel delivery is running in dry-run mode.";
+}
+
 export function proposalListLabel(
   proposal: { canonical_url?: string | null; source_id?: string | null },
   sources: readonly SocialPublishedSource[],
@@ -396,7 +418,7 @@ export default function SocialPublishing({
     }
   };
 
-  const decide = async (action: "approve" | "reject") => {
+  const decide = async (action: "approve" | "reject" | "redraft") => {
     if (!selected || selected.proposal.status !== "staged") return;
     setBusy(action);
     setNotice(null);
@@ -407,15 +429,7 @@ export default function SocialPublishing({
         idempotency_key: crypto.randomUUID(),
         actor_id: null,
       });
-      setNotice({
-        kind: "success",
-        text:
-          action === "approve"
-            ? liveEnabled
-              ? "Approved. Each Buffer channel is queued independently."
-              : "Approved. Channel delivery is running in dry-run mode."
-            : "Proposal rejected.",
-      });
+      setNotice({ kind: "success", text: decisionNotice(action, liveEnabled) });
       await load();
     } catch (err) {
       if (isUnauthorized(err)) onUnauthorized();
@@ -874,6 +888,17 @@ export default function SocialPublishing({
                   Reject
                 </Button>
               ) : null}
+              {selected?.proposal.source_id ? (
+                <Button
+                  variant="secondary"
+                  busy={busy === "redraft"}
+                  disabled={Boolean(busy)}
+                  title="Reject this proposal and draft the source again for the channels configured now"
+                  onClick={() => void decide("redraft")}
+                >
+                  Re-draft
+                </Button>
+              ) : null}
               <Button
                 variant="secondary"
                 busy={busy === "save"}
@@ -887,13 +912,7 @@ export default function SocialPublishing({
                   variant="success"
                   busy={busy === "approve"}
                   disabled={Boolean(busy) || hasUnsavedChanges || !targetsReadyForProviders}
-                  title={
-                    hasUnsavedChanges
-                      ? "Save changes before approval"
-                      : !targetsReadyForProviders
-                        ? "Instagram needs a public image before approval"
-                        : undefined
-                  }
+                  title={approveBlockedReason(hasUnsavedChanges, targetsReadyForProviders)}
                   onClick={() => void decide("approve")}
                 >
                   {liveEnabled ? "Approve & queue in Buffer" : "Approve dry run"}

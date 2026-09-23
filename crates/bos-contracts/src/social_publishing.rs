@@ -283,6 +283,10 @@ pub struct SocialProposalUpdateRequest {
 pub enum SocialProposalActionKind {
     Approve,
     Reject,
+    /// Reject the staged proposal and draft the same source again under the
+    /// currently configured channels. Only meaningful for proposals that were
+    /// generated from a registered source.
+    Redraft,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
