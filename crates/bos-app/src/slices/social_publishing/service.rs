@@ -345,6 +345,71 @@ pub fn approve_request(
     )
 }
 
+/// Reject a staged proposal and draft its source again under the channels
+/// configured right now. This is the recovery path when the channel set
+/// changed after drafting (approval then fails with
+/// `social_channel_configuration_changed`) or the copy simply needs another
+/// attempt.
+pub fn redraft_request(
+    state: crate::http::AppState,
+    proposal_id: &str,
+    expected_revision: u64,
+    idempotency_key: &str,
+    actor_id: &str,
+    now_ms: u64,
+) -> Result<GenerationKickoffOutcome, StoreError> {
+    require_idempotency_key(idempotency_key)?;
+    let (source_id, source_revision) = {
+        let mut persistence = state.persistence.lock();
+        let entry =
+            store::get_proposal(persistence.connection_ref(), &state.client_id, proposal_id)?
+                .ok_or_else(|| StoreError::Domain("social_proposal_not_found".to_string()))?;
+        let source_id = entry
+            .proposal
+            .source_id
+            .clone()
+            .ok_or_else(|| StoreError::Domain("social_proposal_has_no_source".to_string()))?;
+        let rejected = reject_request(
+            persistence.connection(),
+            &state.client_id,
+            actor_id,
+            proposal_id,
+            expected_revision,
+            &format!("{idempotency_key}:reject"),
+            now_ms,
+        )?;
+        if let MutationOutcome::RevisionConflict { .. } = rejected {
+            return Ok(GenerationKickoffOutcome::Conflict(rejected));
+        }
+        let source = store::get_source(persistence.connection_ref(), &state.client_id, &source_id)?
+            .ok_or_else(|| StoreError::Domain("social_published_source_not_found".to_string()))?;
+        if source.generation_status != SocialSourceGenerationStatus::Ready {
+            store::reset_generation(
+                persistence.connection(),
+                MutationContext {
+                    client_id: &state.client_id,
+                    actor_id,
+                    expected_revision: Some(source.revision),
+                    idempotency_key: &format!("{idempotency_key}:reset"),
+                    now_ms,
+                },
+                &source_id,
+            )?;
+        }
+        let source = store::get_source(persistence.connection_ref(), &state.client_id, &source_id)?
+            .ok_or_else(|| StoreError::Domain("social_published_source_not_found".to_string()))?;
+        (source_id, source.revision)
+    };
+    kickoff_generation(
+        state,
+        &source_id,
+        source_revision,
+        &format!("social-redraft:{idempotency_key}"),
+        actor_id,
+        ActorKindDto::Operator,
+    )
+}
+
 pub fn reject_request(
     conn: &mut Connection,
     client_id: &str,

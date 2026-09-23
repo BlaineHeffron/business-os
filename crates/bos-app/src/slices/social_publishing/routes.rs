@@ -152,8 +152,28 @@ async fn proposal_action(
         Err(denied) => return *denied,
     };
     let actor_id = auth.actor_or(request.actor_id.as_deref());
+    if request.action == SocialProposalActionKind::Redraft {
+        // Takes the persistence lock itself and spawns the generation run.
+        return match service::redraft_request(
+            state,
+            &proposal_id,
+            request.expected_revision,
+            &request.idempotency_key,
+            &actor_id,
+            now_ms(),
+        ) {
+            Ok(service::GenerationKickoffOutcome::Accepted(source)) => (
+                StatusCode::ACCEPTED,
+                Json(SocialGenerationResponse { source: *source }),
+            )
+                .into_response(),
+            Ok(service::GenerationKickoffOutcome::Conflict(outcome)) => mutation_response(outcome),
+            Err(err) => store_error_response(err),
+        };
+    }
     let mut persistence = state.persistence.lock();
     let result = match request.action {
+        SocialProposalActionKind::Redraft => unreachable!("handled above"),
         SocialProposalActionKind::Approve => service::approve_request(
             persistence.connection(),
             &state.client_id,

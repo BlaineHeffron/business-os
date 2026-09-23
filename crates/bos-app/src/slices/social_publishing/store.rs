@@ -213,6 +213,52 @@ pub fn begin_generation(
     )
 }
 
+/// Return a source that already has a staged proposal to `ready`, so a fresh
+/// generation can begin. The rejected proposal keeps its own row and history.
+pub fn reset_generation(
+    conn: &mut Connection,
+    ctx: MutationContext<'_>,
+    source_id: &str,
+) -> Result<MutationOutcome, StoreError> {
+    require_expected_revision(ctx.expected_revision)?;
+    let owned_client = ctx.client_id.to_string();
+    let owned_source = source_id.to_string();
+    store_core::mutate(
+        conn,
+        MutationRequest {
+            client_id: ctx.client_id,
+            entity_kind: SOURCE_ENTITY_KIND,
+            entity_id: source_id,
+            change_kind: "generation_reset",
+            actor_id: ctx.actor_id,
+            actor_kind: ActorKindDto::Operator,
+            expected_revision: ctx.expected_revision,
+            idempotency_key: ctx.idempotency_key,
+            correlation_id: Some(source_id),
+            causation_id: None,
+            before_json: None,
+            after_json: Some(serde_json::json!({ "generation_status": "ready" }).to_string()),
+            now_ms: ctx.now_ms,
+        },
+        move |tx| {
+            let changed = tx.execute(
+                "UPDATE social_published_sources SET generation_status = 'ready', \
+                 generation_run_id = NULL, generation_error = NULL, proposal_id = NULL, \
+                 updated_at_ms = ?3 \
+                 WHERE client_id = ?1 AND source_id = ?2 \
+                   AND generation_status IN ('proposal_staged', 'generation_failed')",
+                params![owned_client, owned_source, ctx.now_ms as i64],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::Domain(
+                    "social_source_generation_state_invalid".to_string(),
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
 pub fn finish_generation(
     conn: &mut Connection,
     ctx: MutationContext<'_>,

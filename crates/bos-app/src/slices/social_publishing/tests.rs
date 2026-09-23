@@ -1257,6 +1257,109 @@ fn ingest_image_url_is_copied_onto_drafted_targets() {
 }
 
 #[test]
+fn redraft_rejects_staged_proposal_and_drafts_again_under_current_channels() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let source = {
+        let mut persistence = state.persistence.lock();
+        service::ingest_source_request(
+            persistence.connection(),
+            CLIENT,
+            "mcp:openclaw",
+            ActorKindDto::Agent,
+            &ingress_request("redraft", "ingress-redraft"),
+            1_000,
+        )
+        .expect("ingest")
+    };
+    let draft = json!({
+        "targets": [
+            {
+                "target_ref": "target_1",
+                "text": "Prepare concrete before the epoxy coating.",
+                "utm_source": "linkedin", "utm_medium": "social",
+                "utm_campaign": "epoxy_guide", "utm_content": "article",
+                "source_quotes": ["before epoxy coating"]
+            },
+            {
+                "target_ref": "target_2",
+                "text": "Diamond grinding removes weak concrete.",
+                "utm_source": "x", "utm_medium": "social",
+                "utm_campaign": "epoxy_guide", "utm_content": null,
+                "source_quotes": ["Diamond grinding removes weak concrete"]
+            }
+        ],
+        "confidence": "high"
+    });
+    service::set_test_social_draft_responses(vec![draft.clone(), draft]);
+    service::kickoff_generation(
+        state.clone(),
+        &source.source_id,
+        source.revision,
+        "generate-redraft-first",
+        "user_example",
+        ActorKindDto::Operator,
+    )
+    .expect("first kickoff");
+    let staged = wait_for_source_status(
+        &state,
+        &source.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let first_proposal = staged.proposal_id.clone().expect("first proposal");
+
+    let service::GenerationKickoffOutcome::Accepted(restarted) = service::redraft_request(
+        state.clone(),
+        &first_proposal,
+        1,
+        "redraft-1",
+        "user_example",
+        2_000,
+    )
+    .expect("redraft") else {
+        panic!("redraft must not conflict on the current revision");
+    };
+    assert_eq!(
+        restarted.generation_status,
+        SocialSourceGenerationStatus::Generating
+    );
+    let redrafted = wait_for_source_status(
+        &state,
+        &source.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let second_proposal = redrafted.proposal_id.clone().expect("second proposal");
+    assert_ne!(second_proposal, first_proposal);
+
+    let persistence = state.persistence.lock();
+    let read = |id: &str| {
+        store::get_proposal(persistence.connection_ref(), CLIENT, id)
+            .expect("proposal read")
+            .expect("proposal")
+            .proposal
+            .status
+    };
+    assert_eq!(read(&first_proposal), SocialProposalStatus::Rejected);
+    assert_eq!(read(&second_proposal), SocialProposalStatus::Staged);
+
+    // A stale card (old revision) conflicts instead of rejecting twice.
+    drop(persistence);
+    let stale = service::redraft_request(
+        state.clone(),
+        &second_proposal,
+        99,
+        "redraft-stale",
+        "user_example",
+        3_000,
+    )
+    .expect("stale redraft");
+    assert!(matches!(
+        stale,
+        service::GenerationKickoffOutcome::Conflict(MutationOutcome::RevisionConflict { .. })
+    ));
+}
+
+#[test]
 fn ingest_rejects_non_https_image_url() {
     let state = test_state();
     let mut request = ingress_request("bad-image", "ingress-bad-image");
