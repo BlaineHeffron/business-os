@@ -14,9 +14,9 @@ Use Social for standalone post-publication campaigns. For a planned blog campaig
 
 - Select a published article or paste its canonical HTTPS URL.
 - For a known published article, choose Generate with AI. Generated claims must be supported by the published source before a proposal is ready for review.
-- Tailor the text, public image, tracking values, and timing for each configured channel.
+- Tailor the text, public image, tracking values, and timing for each configured channel. Timing can be the next Buffer queue slot, a specific time, or a Buffer draft that does not publish until someone schedules it in Buffer.
 - Save edits before deciding.
-- Approve the exact text shown to queue every channel independently.
+- Approve the exact text shown. Each channel is delivered independently.
 - Retry only a failed channel without touching successful channels.
 
 ## Notes

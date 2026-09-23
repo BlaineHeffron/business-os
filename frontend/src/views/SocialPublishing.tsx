@@ -8,6 +8,7 @@ import type { SocialProposalStatus } from "../types/generated/SocialProposalStat
 import type { SocialProposalTargetInput } from "../types/generated/SocialProposalTargetInput";
 import type { SocialPublishedSource } from "../types/generated/SocialPublishedSource";
 import type { SocialPublishingChannel } from "../types/generated/SocialPublishingChannel";
+import type { SocialScheduleMode } from "../types/generated/SocialScheduleMode";
 import type { SocialUtmParameters } from "../types/generated/SocialUtmParameters";
 
 type Notice = { kind: "success" | "error" | "conflict"; text: string } | null;
@@ -201,6 +202,16 @@ export function nextSocialProposalId(
 function browserTimeZoneLabel(): string {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return zone ? `Your time · ${zone}` : "Your local time";
+}
+
+export function scheduleModeLabel(
+  mode: SocialScheduleMode,
+  dueAt: string | null | undefined,
+  timeZone = browserTimeZoneLabel(),
+): string {
+  if (mode === "queue") return "Next Buffer queue slot";
+  if (mode === "draft") return "Buffer draft (not scheduled)";
+  return `${new Date(dueAt ?? "").toLocaleString()} · ${timeZone}`;
 }
 
 export default function SocialPublishing({
@@ -463,7 +474,7 @@ export default function SocialPublishing({
     targets.every(
       (target) =>
         target.text.trim().length > 0 &&
-        (target.schedule_mode === "queue" || Boolean(target.due_at)),
+        (target.schedule_mode !== "scheduled" || Boolean(target.due_at)),
     );
 
   return (
@@ -795,14 +806,15 @@ export default function SocialPublishing({
                           onChange={(event) =>
                             patchTarget(target.channel_id, (current) => ({
                               ...current,
-                              schedule_mode: event.target.value as "queue" | "scheduled",
-                              due_at: event.target.value === "queue" ? null : current.due_at,
+                              schedule_mode: event.target.value as SocialProposalTargetInput["schedule_mode"],
+                              due_at: event.target.value === "scheduled" ? current.due_at : null,
                             }))
                           }
                           className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30"
                         >
                           <option value="queue">Next queue slot</option>
                           <option value="scheduled">Specific time</option>
+                          <option value="draft">Buffer draft (not scheduled)</option>
                         </select>
                       </label>
                       {target.schedule_mode === "scheduled" ? (
@@ -841,9 +853,7 @@ export default function SocialPublishing({
                       <div>
                         <dt className="text-zinc-400">Schedule</dt>
                         <dd className="text-zinc-300">
-                          {stored.schedule_mode === "queue"
-                            ? "Next Buffer queue slot"
-                            : `${new Date(stored.due_at ?? "").toLocaleString()} · ${browserTimeZoneLabel()}`}
+                          {scheduleModeLabel(stored.schedule_mode, stored.due_at)}
                         </dd>
                       </div>
                     </dl>

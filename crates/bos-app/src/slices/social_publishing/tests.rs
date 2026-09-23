@@ -4,7 +4,7 @@ use bos_contracts::social_publishing::{
     SocialProposalTargetInput, SocialProposalUpdateRequest, SocialPublishedContentIngressRequest,
     SocialScheduleMode, SocialSourceGenerationStatus, SocialUtmParameters,
 };
-use bos_integrations::buffer::{BufferPostOutboxPayload, BufferWriteConfig};
+use bos_integrations::buffer::{BufferPostOutboxPayload, BufferScheduleMode, BufferWriteConfig};
 use serde_json::json;
 
 use super::{service, store};
@@ -593,6 +593,90 @@ fn proposal_must_cover_exact_configured_channels_and_valid_schedule() {
         err,
         crate::store_core::StoreError::Domain(code) if code == "social_schedule_due_at_invalid"
     ));
+
+    let mut request = stage_request("stage-social-draft-due-at");
+    request.targets[0].schedule_mode = SocialScheduleMode::Draft;
+    request.targets[0].due_at = Some("2026-08-20T14:00:00Z".to_string());
+    let err = service::stage_request(
+        persistence.connection(),
+        CLIENT,
+        "user_example",
+        ActorKindDto::Operator,
+        &request,
+        3_000,
+    )
+    .expect_err("draft cannot carry due_at");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_queue_due_at_invalid"
+    ));
+}
+
+#[test]
+fn draft_schedule_persists_and_fans_out_without_due_at() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let mut persistence = state.persistence.lock();
+    let mut request = stage_request("stage-social-draft");
+    request.targets[0].schedule_mode = SocialScheduleMode::Draft;
+    let (_, proposal_id) = service::stage_request(
+        persistence.connection(),
+        CLIENT,
+        "user_example",
+        ActorKindDto::Operator,
+        &request,
+        1_000,
+    )
+    .expect("stage draft");
+    let staged = store::get_proposal(persistence.connection_ref(), CLIENT, &proposal_id)
+        .expect("read")
+        .expect("proposal");
+    assert_eq!(
+        staged.proposal.targets[0].schedule_mode,
+        SocialScheduleMode::Draft
+    );
+    assert_eq!(staged.proposal.targets[0].due_at, None);
+    assert_eq!(
+        staged.proposal.targets[1].schedule_mode,
+        SocialScheduleMode::Queue
+    );
+
+    service::approve_request(
+        persistence.connection(),
+        CLIENT,
+        "user_example",
+        &proposal_id,
+        1,
+        "approve-social-draft",
+        2_000,
+    )
+    .expect("approve draft");
+    let jobs = crate::outbox::claim_due_jobs(
+        persistence.connection(),
+        CLIENT,
+        Some(service::PROVIDER_BUFFER),
+        60_000,
+        10,
+        3_000,
+    )
+    .expect("claim draft jobs");
+    let payloads = jobs
+        .iter()
+        .map(|job| {
+            serde_json::from_str::<BufferPostOutboxPayload>(&job.payload_json).expect("payload")
+        })
+        .collect::<Vec<_>>();
+    let linkedin = payloads
+        .iter()
+        .find(|payload| payload.channel_id == "buf_linkedin")
+        .expect("linkedin job");
+    let twitter = payloads
+        .iter()
+        .find(|payload| payload.channel_id == "buf_x")
+        .expect("twitter job");
+    assert_eq!(linkedin.schedule_mode, BufferScheduleMode::Draft);
+    assert_eq!(linkedin.due_at, None);
+    assert_eq!(twitter.schedule_mode, BufferScheduleMode::Queue);
 }
 
 #[test]

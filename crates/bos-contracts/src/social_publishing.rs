@@ -20,6 +20,9 @@ pub enum SocialProposalStatus {
 pub enum SocialScheduleMode {
     Queue,
     Scheduled,
+    /// Saved as a Buffer draft: nothing publishes until someone schedules it
+    /// in Buffer.
+    Draft,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -56,7 +59,7 @@ pub struct SocialProposalTargetInput {
     #[serde(default)]
     pub utm: SocialUtmParameters,
     pub schedule_mode: SocialScheduleMode,
-    /// Required for scheduled mode; absent for queue mode. RFC3339 with offset.
+    /// Required for scheduled mode; absent for queue and draft modes. RFC3339 with offset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<String>,
 }

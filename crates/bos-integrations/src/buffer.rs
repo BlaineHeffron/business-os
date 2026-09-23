@@ -90,6 +90,7 @@ fn outcome_unknown(code: &str, message: impl Into<String>) -> BufferWriteError {
 pub enum BufferScheduleMode {
     Queue,
     Scheduled,
+    Draft,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +295,10 @@ impl<C: BufferHttp> LiveBufferClient<C> {
                 input.insert("mode".to_string(), json!("customScheduled"));
                 input.insert("dueAt".to_string(), json!(payload.due_at));
             }
+            BufferScheduleMode::Draft => {
+                input.insert("mode".to_string(), json!("addToQueue"));
+                input.insert("saveToDraft".to_string(), json!(true));
+            }
         }
         if let Some(image_url) = payload.image_url.as_deref() {
             input.insert(
@@ -303,11 +308,19 @@ impl<C: BufferHttp> LiveBufferClient<C> {
         }
         // The social proposal contract represents ordinary feed/update posts.
         // Emit the provider metadata required by Buffer for those exact post
-        // types. Facebook and LinkedIn need no metadata for this shape.
+        // types. LinkedIn needs no metadata for this shape.
         // Google What's New field names follow Buffer's GooglePostMetadataInput
         // docs; live writes stay gated until an attended draft confirms them.
         let platform = payload.platform.trim().to_ascii_lowercase();
         match platform.as_str() {
+            FACEBOOK_PLATFORM => {
+                // Verified live 2026-09-23: Facebook rejects createPost with
+                // "Facebook posts require a type (post, story, or reel)".
+                input.insert(
+                    "metadata".to_string(),
+                    json!({ "facebook": { "type": "post" } }),
+                );
+            }
             INSTAGRAM_PLATFORM => {
                 // Verified live 2026-08-17: Instagram rejects createPost when
                 // type and shouldShareToFeed are absent.
@@ -509,10 +522,12 @@ pub fn validate_payload(payload: &BufferPostOutboxPayload) -> Result<(), BufferW
         ));
     }
     match payload.schedule_mode {
-        BufferScheduleMode::Queue if payload.due_at.is_some() => Err(permanent(
-            "buffer_queue_due_at_invalid",
-            "queue mode cannot carry due_at",
-        )),
+        BufferScheduleMode::Queue | BufferScheduleMode::Draft if payload.due_at.is_some() => {
+            Err(permanent(
+                "buffer_queue_due_at_invalid",
+                "queue and draft modes cannot carry due_at",
+            ))
+        }
         BufferScheduleMode::Scheduled
             if payload
                 .due_at
@@ -664,6 +679,25 @@ mod tests {
     }
 
     #[test]
+    fn draft_mode_saves_a_buffer_draft_and_queue_mode_does_not() {
+        let mut draft = payload();
+        draft.schedule_mode = BufferScheduleMode::Draft;
+        draft.due_at = None;
+        let input = &LiveBufferClient::<FakeHttp>::request_body(&draft)["variables"]["input"];
+        assert_eq!(input["mode"], "addToQueue");
+        assert_eq!(input["saveToDraft"], true);
+        assert!(input.get("dueAt").is_none());
+
+        let mut queue = draft.clone();
+        queue.schedule_mode = BufferScheduleMode::Queue;
+        let input = &LiveBufferClient::<FakeHttp>::request_body(&queue)["variables"]["input"];
+        assert!(input.get("saveToDraft").is_none());
+
+        draft.due_at = Some("2026-08-20T14:00:00Z".to_string());
+        assert!(validate_payload(&draft).is_err());
+    }
+
+    #[test]
     fn instagram_payloads_carry_required_post_type_metadata() {
         let http = Arc::new(FakeHttp::default());
         http.respond(
@@ -735,7 +769,10 @@ mod tests {
             .expect("google business create");
 
         let calls = http.calls.lock().expect("lock");
-        assert!(calls[0].2["variables"]["input"].get("metadata").is_none());
+        assert_eq!(
+            calls[0].2["variables"]["input"]["metadata"],
+            json!({ "facebook": { "type": "post" } })
+        );
         assert!(calls[1].2["variables"]["input"].get("metadata").is_none());
         let google = &calls[2].2["variables"]["input"]["metadata"]["google"];
         assert_eq!(google["type"], "whats_new");
