@@ -1256,10 +1256,24 @@ fn ingest_image_url_is_copied_onto_drafted_targets() {
     }));
 }
 
-#[test]
-fn redraft_rejects_staged_proposal_and_drafts_again_under_current_channels() {
-    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
-    let state = test_state();
+fn draft_response(refs: &[(&str, &str)]) -> serde_json::Value {
+    json!({
+        "targets": refs.iter().map(|(target_ref, utm_source)| json!({
+            "target_ref": target_ref,
+            "text": "Diamond grinding removes weak concrete before epoxy coating.",
+            "utm_source": utm_source, "utm_medium": "social",
+            "utm_campaign": "epoxy_guide", "utm_content": null,
+            "source_quotes": ["Diamond grinding removes weak concrete"]
+        })).collect::<Vec<_>>(),
+        "confidence": "high"
+    })
+}
+
+fn ingest_and_draft(
+    state: &crate::http::AppState,
+    external_id: &str,
+    response: serde_json::Value,
+) -> bos_contracts::social_publishing::SocialPublishedSource {
     let source = {
         let mut persistence = state.persistence.lock();
         service::ingest_source_request(
@@ -1267,52 +1281,88 @@ fn redraft_rejects_staged_proposal_and_drafts_again_under_current_channels() {
             CLIENT,
             "mcp:openclaw",
             ActorKindDto::Agent,
-            &ingress_request("redraft", "ingress-redraft"),
+            &ingress_request(external_id, &format!("ingress-{external_id}")),
             1_000,
         )
         .expect("ingest")
     };
-    let draft = json!({
-        "targets": [
-            {
-                "target_ref": "target_1",
-                "text": "Prepare concrete before the epoxy coating.",
-                "utm_source": "linkedin", "utm_medium": "social",
-                "utm_campaign": "epoxy_guide", "utm_content": "article",
-                "source_quotes": ["before epoxy coating"]
-            },
-            {
-                "target_ref": "target_2",
-                "text": "Diamond grinding removes weak concrete.",
-                "utm_source": "x", "utm_medium": "social",
-                "utm_campaign": "epoxy_guide", "utm_content": null,
-                "source_quotes": ["Diamond grinding removes weak concrete"]
-            }
-        ],
-        "confidence": "high"
-    });
-    service::set_test_social_draft_responses(vec![draft.clone(), draft]);
+    service::set_test_social_draft_responses(vec![response]);
     service::kickoff_generation(
         state.clone(),
         &source.source_id,
         source.revision,
-        "generate-redraft-first",
+        &format!("generate-{external_id}"),
         "user_example",
         ActorKindDto::Operator,
     )
-    .expect("first kickoff");
-    let staged = wait_for_source_status(
-        &state,
+    .expect("kickoff");
+    wait_for_source_status(
+        state,
         &source.source_id,
         SocialSourceGenerationStatus::ProposalStaged,
+    )
+}
+
+fn proposal_status(state: &crate::http::AppState, proposal_id: &str) -> SocialProposalStatus {
+    let persistence = state.persistence.lock();
+    store::get_proposal(persistence.connection_ref(), CLIENT, proposal_id)
+        .expect("proposal read")
+        .expect("proposal")
+        .proposal
+        .status
+}
+
+#[test]
+fn redraft_after_channel_trim_rejects_stale_card_and_drafts_for_live_channels() {
+    // The incident: drafted for four channels, then the Buffer list was
+    // trimmed to two. Approval of the stale card fails; redraft recovers.
+    let _four = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", FOUR_CONNECTED_CHANNELS);
+    let state = test_state();
+    let staged = ingest_and_draft(
+        &state,
+        "trim",
+        draft_response(&[
+            ("target_1", "instagram"),
+            ("target_2", "facebook"),
+            ("target_3", "linkedin"),
+            ("target_4", "googlebusiness"),
+        ]),
     );
     let first_proposal = staged.proposal_id.clone().expect("first proposal");
 
+    // The guard holds the process-wide env lock and restores the original
+    // value on drop; trim the list in place under that same guard.
+    unsafe {
+        std::env::set_var("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    }
+    let stale_approval = {
+        let mut persistence = state.persistence.lock();
+        service::approve_request(
+            persistence.connection(),
+            CLIENT,
+            "user_example",
+            &first_proposal,
+            1,
+            "approve-trim-stale",
+            1_500,
+        )
+        .expect_err("approval must refuse a stale channel snapshot")
+    };
+    assert!(matches!(
+        stale_approval,
+        crate::store_core::StoreError::Domain(code)
+            if code == "social_channel_configuration_changed"
+    ));
+
+    service::set_test_social_draft_responses(vec![draft_response(&[
+        ("target_1", "linkedin"),
+        ("target_2", "x"),
+    ])]);
     let service::GenerationKickoffOutcome::Accepted(restarted) = service::redraft_request(
         state.clone(),
         &first_proposal,
         1,
-        "redraft-1",
+        "redraft-trim",
         "user_example",
         2_000,
     )
@@ -1325,25 +1375,31 @@ fn redraft_rejects_staged_proposal_and_drafts_again_under_current_channels() {
     );
     let redrafted = wait_for_source_status(
         &state,
-        &source.source_id,
+        &staged.source_id,
         SocialSourceGenerationStatus::ProposalStaged,
     );
     let second_proposal = redrafted.proposal_id.clone().expect("second proposal");
     assert_ne!(second_proposal, first_proposal);
+    assert_eq!(
+        proposal_status(&state, &first_proposal),
+        SocialProposalStatus::Rejected
+    );
 
     let persistence = state.persistence.lock();
-    let read = |id: &str| {
-        store::get_proposal(persistence.connection_ref(), CLIENT, id)
-            .expect("proposal read")
-            .expect("proposal")
-            .proposal
-            .status
-    };
-    assert_eq!(read(&first_proposal), SocialProposalStatus::Rejected);
-    assert_eq!(read(&second_proposal), SocialProposalStatus::Staged);
+    let second = store::get_proposal(persistence.connection_ref(), CLIENT, &second_proposal)
+        .expect("proposal read")
+        .expect("proposal");
+    assert_eq!(second.proposal.status, SocialProposalStatus::Staged);
+    let live: Vec<&str> = second
+        .proposal
+        .targets
+        .iter()
+        .map(|target| target.channel_id.as_str())
+        .collect();
+    assert_eq!(live, vec!["buf_linkedin", "buf_x"]);
+    drop(persistence);
 
     // A stale card (old revision) conflicts instead of rejecting twice.
-    drop(persistence);
     let stale = service::redraft_request(
         state.clone(),
         &second_proposal,
@@ -1357,6 +1413,173 @@ fn redraft_rejects_staged_proposal_and_drafts_again_under_current_channels() {
         stale,
         service::GenerationKickoffOutcome::Conflict(MutationOutcome::RevisionConflict { .. })
     ));
+}
+
+#[test]
+fn redraft_replays_idempotently_and_refuses_the_rejected_card_afterwards() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let staged = ingest_and_draft(
+        &state,
+        "replay",
+        draft_response(&[("target_1", "linkedin"), ("target_2", "x")]),
+    );
+    let first_proposal = staged.proposal_id.clone().expect("first proposal");
+
+    service::set_test_social_draft_responses(vec![draft_response(&[
+        ("target_1", "linkedin"),
+        ("target_2", "x"),
+    ])]);
+    let service::GenerationKickoffOutcome::Accepted(first_kick) = service::redraft_request(
+        state.clone(),
+        &first_proposal,
+        1,
+        "redraft-replay",
+        "user_example",
+        2_000,
+    )
+    .expect("redraft") else {
+        panic!("redraft must be accepted");
+    };
+    let run_id = first_kick.generation_run_id.clone().expect("run id");
+
+    // A different key against the now-rejected card, whether the new run is
+    // still in flight or already staged: the source no longer points at it.
+    let err = service::redraft_request(
+        state.clone(),
+        &first_proposal,
+        1,
+        "redraft-again",
+        "user_example",
+        2_100,
+    )
+    .expect_err("rejected proposal must not redraft twice");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_proposal_not_staged"
+    ));
+
+    let redrafted = wait_for_source_status(
+        &state,
+        &staged.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    let second_proposal = redrafted.proposal_id.clone().expect("second proposal");
+
+    // Same idempotency key: no second reject, no second run, no third proposal.
+    let service::GenerationKickoffOutcome::Accepted(replayed) = service::redraft_request(
+        state.clone(),
+        &first_proposal,
+        1,
+        "redraft-replay",
+        "user_example",
+        2_200,
+    )
+    .expect("replay") else {
+        panic!("replay must be accepted");
+    };
+    assert_eq!(replayed.generation_run_id.as_deref(), Some(run_id.as_str()));
+    assert_eq!(
+        replayed.proposal_id.as_deref(),
+        Some(second_proposal.as_str())
+    );
+    assert_eq!(
+        proposal_status(&state, &first_proposal),
+        SocialProposalStatus::Rejected
+    );
+    assert_eq!(
+        proposal_status(&state, &second_proposal),
+        SocialProposalStatus::Staged
+    );
+}
+
+#[test]
+fn redraft_refuses_a_proposal_without_a_source() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let (_, proposal_id) = {
+        let mut persistence = state.persistence.lock();
+        service::stage_request(
+            persistence.connection(),
+            CLIENT,
+            "user_example",
+            ActorKindDto::Operator,
+            &stage_request("stage-no-source"),
+            1_000,
+        )
+        .expect("stage")
+    };
+    let err = service::redraft_request(
+        state.clone(),
+        &proposal_id,
+        1,
+        "redraft-no-source",
+        "user_example",
+        2_000,
+    )
+    .expect_err("manually staged proposal has no source");
+    assert!(matches!(
+        err,
+        crate::store_core::StoreError::Domain(code) if code == "social_proposal_has_no_source"
+    ));
+    assert_eq!(
+        proposal_status(&state, &proposal_id),
+        SocialProposalStatus::Staged
+    );
+}
+
+#[test]
+fn redraft_heals_a_source_left_behind_by_a_plain_reject() {
+    let _env = EnvGuard::set("BOS_BUFFER_CHANNELS_JSON", CHANNELS);
+    let state = test_state();
+    let staged = ingest_and_draft(
+        &state,
+        "heal",
+        draft_response(&[("target_1", "linkedin"), ("target_2", "x")]),
+    );
+    let first_proposal = staged.proposal_id.clone().expect("first proposal");
+    {
+        let mut persistence = state.persistence.lock();
+        service::reject_request(
+            persistence.connection(),
+            CLIENT,
+            "user_example",
+            &first_proposal,
+            1,
+            "reject-heal",
+            1_500,
+        )
+        .expect("plain reject");
+        let stuck = store::get_source(persistence.connection_ref(), CLIENT, &staged.source_id)
+            .expect("source")
+            .expect("source");
+        assert_eq!(
+            stuck.generation_status,
+            SocialSourceGenerationStatus::ProposalStaged,
+            "a plain reject leaves the source pointing at the rejected proposal"
+        );
+    }
+    service::set_test_social_draft_responses(vec![draft_response(&[
+        ("target_1", "linkedin"),
+        ("target_2", "x"),
+    ])]);
+    let service::GenerationKickoffOutcome::Accepted(_) = service::redraft_request(
+        state.clone(),
+        &first_proposal,
+        2,
+        "redraft-heal",
+        "user_example",
+        2_000,
+    )
+    .expect("redraft heals the source") else {
+        panic!("redraft must be accepted");
+    };
+    let healed = wait_for_source_status(
+        &state,
+        &staged.source_id,
+        SocialSourceGenerationStatus::ProposalStaged,
+    );
+    assert_ne!(healed.proposal_id.as_deref(), Some(first_proposal.as_str()));
 }
 
 #[test]

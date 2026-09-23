@@ -14,7 +14,7 @@ CRM, Gmail, admin settings, or user administration.
 | --- | --- |
 | `social_publishing:read` | `GET /api/social-publishing/proposals` |
 | `social_publishing:update` | `POST /api/social-publishing/proposals/{id}/update` |
-| `social_publishing:approve` | `POST /api/social-publishing/proposals/{id}/action` |
+| `social_publishing:approve` | `POST /api/social-publishing/proposals/{id}/action` (approve, reject, and redraft; redraft spawns the same typed-LLM draft as the generate route) |
 | `social_publishing:stage` | `POST /api/social-publishing/proposals` (operator-authored copy) |
 | `social_publishing:generate` | generate / preview kickoff routes |
 | `agent_mcp:ingest` | MCP endpoint, `bos_social_published_content_ingest` and `bos_social_adhoc_source_create` only |

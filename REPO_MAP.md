@@ -601,7 +601,7 @@ Published-content or ad-hoc ingress and a bounded typed transform produce editab
 | GET | `/api/social-publishing/proposals` | Published-source generation state, recent proposals, configured Buffer channels, and per-channel delivery state |
 | POST | `/api/social-publishing/proposals` | Stage one editable proposal covering every configured Buffer channel |
 | POST | `/api/social-publishing/proposals/{proposal_id}/update` | Replace a staged proposal's exact channel text, image, UTM, and schedule snapshot |
-| POST | `/api/social-publishing/proposals/{proposal_id}/action` | Approve the exact current revision and fan out channel jobs atomically, or reject |
+| POST | `/api/social-publishing/proposals/{proposal_id}/action` | Approve the exact current revision and fan out channel jobs atomically, reject, or redraft (reject plus a fresh typed-LLM draft under the current channels) |
 | POST | `/api/social-publishing/sources/{source_id}/generate` | Kick off one bounded typed transform that drafts grounded per-channel proposals from published content |
 | POST | `/api/social-publishing/drafts/{draft_id}/generate-preview` | Draft grounded social variants from an exact editable article revision and operator-previewed canonical URL |
 

@@ -35,7 +35,7 @@ pub const SLICE: SliceSpec = SliceSpec {
         RouteSpec {
             method: "POST",
             path: "/api/social-publishing/proposals/{proposal_id}/action",
-            summary: "Approve the exact current revision and fan out channel jobs atomically, or reject",
+            summary: "Approve the exact current revision and fan out channel jobs atomically, reject, or redraft (reject plus a fresh typed-LLM draft under the current channels)",
         },
         RouteSpec {
             method: "POST",

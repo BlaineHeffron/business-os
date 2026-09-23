@@ -637,6 +637,27 @@ fn write_revision(
     Ok(())
 }
 
+/// Advance another entity's revision inside an existing receipted transaction,
+/// for a mutation that must change two entities atomically. The caller has
+/// just read `expected_revision` under the same lock; a mismatch aborts the
+/// whole transaction.
+pub fn advance_revision_within(
+    tx: &Transaction<'_>,
+    client_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    expected_revision: u64,
+    now_ms: u64,
+) -> Result<u64, StoreError> {
+    let current = read_revision(tx, client_id, entity_kind, entity_id)?;
+    if current != Some(expected_revision) {
+        return Err(StoreError::Domain("entity_revision_changed".to_string()));
+    }
+    let next = expected_revision + 1;
+    write_revision(tx, client_id, entity_kind, entity_id, next, now_ms)?;
+    Ok(next)
+}
+
 /// Initialize a newly-created entity's revision inside an existing receipted
 /// transaction. This is intentionally insert-only: callers use it when another
 /// entity's mutation creates a child row, and an existing revision means the

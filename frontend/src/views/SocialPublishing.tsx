@@ -396,6 +396,28 @@ export default function SocialPublishing({
     }
   };
 
+  const redraft = async () => {
+    if (!selected || selected.proposal.status !== "staged" || !selected.proposal.source_id) return;
+    setBusy("redraft");
+    setNotice(null);
+    try {
+      await api.redraftSocialProposal(selected.proposal.proposal_id, {
+        expected_revision: selected.revision,
+        idempotency_key: crypto.randomUUID(),
+        actor_id: null,
+      });
+      setNotice({
+        kind: "success",
+        text: "Rejected and re-drafting under the current Buffer channels. A new proposal appears when drafting finishes.",
+      });
+      await load();
+    } catch (err) {
+      setNotice({ kind: "error", text: errorMessage(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const decide = async (action: "approve" | "reject") => {
     if (!selected || selected.proposal.status !== "staged") return;
     setBusy(action);
@@ -872,6 +894,17 @@ export default function SocialPublishing({
                   onClick={() => void decide("reject")}
                 >
                   Reject
+                </Button>
+              ) : null}
+              {selected?.proposal.source_id ? (
+                <Button
+                  variant="secondary"
+                  busy={busy === "redraft"}
+                  disabled={Boolean(busy)}
+                  title="Reject this proposal and draft the source again for the channels configured now"
+                  onClick={() => void redraft()}
+                >
+                  Re-draft
                 </Button>
               ) : null}
               <Button
