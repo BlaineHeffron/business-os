@@ -346,6 +346,11 @@ struct Rule {
     kind: &'static str,
     re: &'static Regex,
     template: &'static str,
+    /// Capture group that must contain a digit for the match to count. Prose
+    /// such as "the secret: you're close" has the shape of an assignment but
+    /// a purely alphabetic value; real credential values essentially always
+    /// carry a digit.
+    digit_group: Option<usize>,
 }
 
 fn rules() -> &'static [Rule] {
@@ -358,83 +363,97 @@ fn rules() -> &'static [Rule] {
                 kind: "private_key",
                 re: re(r"(?s)-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----.*?-----END (?:[A-Z]+ )*PRIVATE KEY-----"),
                 template: "{M}",
+                digit_group: None,
             },
             Rule {
                 kind: "private_key",
                 re: re(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[A-Za-z0-9+/=\s]*"),
                 template: "{M}",
+                digit_group: None,
             },
             // Whole Authorization / Proxy-Authorization header value.
             Rule {
                 kind: "authorization_header",
                 re: re(r"(?i)\b(?:proxy-)?authorization\s*:\s*[^\r\n]+"),
                 template: "{M}",
+                digit_group: None,
             },
             // JWTs (header.payload.signature).
             Rule {
                 kind: "jwt",
                 re: re(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
                 template: "{M}",
+                digit_group: None,
             },
             // DSN / connection string with embedded user:pass@ — keep the scheme.
             Rule {
                 kind: "connection_string_credential",
                 re: re(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s:/@]+:[^\s:/@]+@"),
                 template: "${1}{M}@",
+                digit_group: None,
             },
             // Stripe live/test/restricted keys.
             Rule {
                 kind: "credential",
                 re: re(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // OpenAI / Anthropic / OpenRouter style keys (sk-, sk-ant-, sk-or-).
             Rule {
                 kind: "credential",
                 re: re(r"\bsk-(?:ant-|or-)?[A-Za-z0-9_-]{16,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // GitHub tokens / PATs.
             Rule {
                 kind: "credential",
                 re: re(r"\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"),
                 template: "{M}",
+                digit_group: None,
             },
             // Slack tokens.
             Rule {
                 kind: "credential",
                 re: re(r"\bxox[bpars]-[A-Za-z0-9-]{8,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // AWS access key IDs.
             Rule {
                 kind: "aws_access_key",
                 re: re(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
                 template: "{M}",
+                digit_group: None,
             },
             // Google API keys.
             Rule {
                 kind: "credential",
                 re: re(r"\bAIza[A-Za-z0-9_-]{10,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // Google OAuth access tokens.
             Rule {
                 kind: "credential",
                 re: re(r"\bya29\.[A-Za-z0-9_-]{10,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // Bearer / Basic credentials (when not already inside an Authorization header).
             Rule {
                 kind: "credential",
                 re: re(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}"),
                 template: "{M}",
+                digit_group: None,
             },
             // Azure SAS signature query parameter (e.g. ...&sig=base64...).
             Rule {
                 kind: "credential",
                 re: re(r"(?i)([?&]sig=)[A-Za-z0-9%/+=_-]{16,}"),
                 template: "${1}{M}",
+                digit_group: None,
             },
             // Key-name-gated assignment: only fires when the KEY is credential-y,
             // so `order_id=AB12CD34` is untouched but `api_key=AB12CD34` is. The
@@ -446,6 +465,7 @@ fn rules() -> &'static [Rule] {
                     r#"(?i)\b(password|passwd|pwd|secret|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|aws_secret_access_key|account[_-]?key)(\s*[:=]\s*)["']?([^\s"',;\[\]]{6,})"#,
                 ),
                 template: "${1}${2}{M}",
+                digit_group: Some(3),
             },
         ]
     })
@@ -465,17 +485,29 @@ pub fn scrub_llm_input(value: &str) -> (String, ScrubReport) {
     let mut current = value.to_string();
     let mut report = ScrubReport::default();
     for rule in rules() {
-        let hits = rule.re.find_iter(&current).count();
-        if hits == 0 {
-            continue;
-        }
         let replacement = rule
             .template
             .replace("{M}", &format!("[REDACTED:{}]", rule.kind));
+        let mut hits = 0usize;
         current = rule
             .re
-            .replace_all(&current, replacement.as_str())
+            .replace_all(&current, |caps: &regex::Captures<'_>| {
+                let counts = rule.digit_group.is_none_or(|group| {
+                    caps.get(group)
+                        .is_some_and(|m| m.as_str().chars().any(|ch| ch.is_ascii_digit()))
+                });
+                if !counts {
+                    return caps[0].to_string();
+                }
+                hits += 1;
+                let mut expanded = String::new();
+                caps.expand(&replacement, &mut expanded);
+                expanded
+            })
             .into_owned();
+        if hits == 0 {
+            continue;
+        }
         *report.by_kind.entry(rule.kind).or_insert(0) += hits;
         report.total += hits;
     }
@@ -858,6 +890,26 @@ mod tests {
         assert!(!block.contains("sk_live_1234567890abcdef"), "{block}");
         assert!(block.contains("[REDACTED:"));
         assert!(report.total >= 2, "report={report:?}");
+    }
+
+    #[test]
+    fn assignment_rule_ignores_prose_with_alphabetic_values() {
+        // Verbatim from a published Royall Stays article that the social
+        // drafter redacted in production (2026-09-22): the value after
+        // "secret:" is an English word, not a credential.
+        let prose = "Here&rsquo;s the geography that makes Mount Pleasant the secret: you&rsquo;re close. \
+            Coastal Casa sits in the Old Village. Password: remember the gate code is on the fridge.";
+        let (scrubbed, report) = scrub_llm_input(prose);
+        assert_eq!(scrubbed, prose);
+        assert!(report.is_empty(), "report={report:?}");
+
+        // A digit anywhere in the value still counts as a credential.
+        let (scrubbed, report) = scrub_llm_input("secret: hunter2pass and api_key=AB12CD34");
+        assert_eq!(
+            scrubbed,
+            "secret: [REDACTED:credential_assignment] and api_key=[REDACTED:credential_assignment]"
+        );
+        assert_eq!(report.by_kind.get("credential_assignment"), Some(&2));
     }
 
     #[test]
