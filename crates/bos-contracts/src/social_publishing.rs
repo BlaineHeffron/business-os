@@ -20,6 +20,9 @@ pub enum SocialProposalStatus {
 pub enum SocialScheduleMode {
     Queue,
     Scheduled,
+    /// Saved as a Buffer draft: nothing publishes until someone schedules it
+    /// in Buffer.
+    Draft,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

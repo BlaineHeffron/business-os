@@ -787,6 +787,7 @@ export default function ContentCampaignWorkspace({
                         >
                           <option value="queue">Add to queue</option>
                           <option value="scheduled">Schedule exact time</option>
+                          <option value="draft">Save as Buffer draft</option>
                         </select>
                       </label>
                       {target.schedule_mode === "scheduled" ? (

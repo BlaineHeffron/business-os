@@ -147,7 +147,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   social_published_source_identity_changed: "This source identifier already belongs to a different canonical blog post.",
   social_published_source_not_live: "The selected blog post does not have a live published URL yet.",
   social_published_source_url_mismatch: "Use the selected blog post's canonical published URL.",
-  social_queue_due_at_invalid: "Queue mode cannot include a scheduled time.",
+  social_queue_due_at_invalid: "Only Specific time can include a scheduled time.",
   social_schedule_due_at_invalid: "Enter a valid scheduled date and time.",
   social_schedule_due_at_required: "Choose a scheduled date and time.",
   social_adhoc_grounding_invalid: "Add the facts this post must stay grounded in.",

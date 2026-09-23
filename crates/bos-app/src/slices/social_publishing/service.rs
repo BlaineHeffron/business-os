@@ -1348,6 +1348,7 @@ pub fn build_channel_jobs(
                 schedule_mode: match target.schedule_mode {
                     SocialScheduleMode::Queue => BufferScheduleMode::Queue,
                     SocialScheduleMode::Scheduled => BufferScheduleMode::Scheduled,
+                    SocialScheduleMode::Draft => BufferScheduleMode::Draft,
                 },
                 due_at: target.due_at.clone(),
                 approval: BufferApprovalMetadata {
@@ -1505,13 +1506,13 @@ fn normalize_target(
     }
     let image_url = optional_https_image_url(input.image_url.as_deref())?;
     let (schedule_mode, due_at) = match input.schedule_mode {
-        SocialScheduleMode::Queue => {
+        mode @ (SocialScheduleMode::Queue | SocialScheduleMode::Draft) => {
             if clean_optional(input.due_at.as_deref()).is_some() {
                 return Err(StoreError::Domain(
                     "social_queue_due_at_invalid".to_string(),
                 ));
             }
-            (SocialScheduleMode::Queue, None)
+            (mode, None)
         }
         SocialScheduleMode::Scheduled => {
             let due_at = clean_optional(input.due_at.as_deref())

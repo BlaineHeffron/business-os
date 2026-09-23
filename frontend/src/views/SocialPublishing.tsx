@@ -463,7 +463,7 @@ export default function SocialPublishing({
     targets.every(
       (target) =>
         target.text.trim().length > 0 &&
-        (target.schedule_mode === "queue" || Boolean(target.due_at)),
+        (target.schedule_mode !== "scheduled" || Boolean(target.due_at)),
     );
 
   return (
@@ -795,14 +795,15 @@ export default function SocialPublishing({
                           onChange={(event) =>
                             patchTarget(target.channel_id, (current) => ({
                               ...current,
-                              schedule_mode: event.target.value as "queue" | "scheduled",
-                              due_at: event.target.value === "queue" ? null : current.due_at,
+                              schedule_mode: event.target.value as SocialProposalTargetInput["schedule_mode"],
+                              due_at: event.target.value === "scheduled" ? current.due_at : null,
                             }))
                           }
                           className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-500/30"
                         >
                           <option value="queue">Next queue slot</option>
                           <option value="scheduled">Specific time</option>
+                          <option value="draft">Buffer draft (not scheduled)</option>
                         </select>
                       </label>
                       {target.schedule_mode === "scheduled" ? (
@@ -843,7 +844,9 @@ export default function SocialPublishing({
                         <dd className="text-zinc-300">
                           {stored.schedule_mode === "queue"
                             ? "Next Buffer queue slot"
-                            : `${new Date(stored.due_at ?? "").toLocaleString()} · ${browserTimeZoneLabel()}`}
+                            : stored.schedule_mode === "draft"
+                              ? "Buffer draft (not scheduled)"
+                              : `${new Date(stored.due_at ?? "").toLocaleString()} · ${browserTimeZoneLabel()}`}
                         </dd>
                       </div>
                     </dl>
