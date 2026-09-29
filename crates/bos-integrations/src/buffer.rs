@@ -383,9 +383,15 @@ impl<C: BufferHttp> BufferExecutionClient for LiveBufferClient<C> {
             ));
         }
         if !(200..300).contains(&response.status) {
+            let reason = response
+                .body
+                .pointer("/errors/0/message")
+                .and_then(Value::as_str)
+                .map(|message| format!(" ({message})"))
+                .unwrap_or_default();
             return Err(permanent(
                 "buffer_http_rejected",
-                format!("Buffer HTTP {}", response.status),
+                format!("Buffer HTTP {}{reason}", response.status),
             ));
         }
         if let Some(errors) = response.body.get("errors").and_then(Value::as_array) {
@@ -885,6 +891,16 @@ mod tests {
             client.create_post(&payload()),
             Err(BufferWriteError::OutcomeUnknown { code, .. })
                 if code == "buffer_delivery_outcome_unknown"
+        ));
+        http.respond(
+            401,
+            json!({ "errors": [{ "message": "Access token is not valid" }] }),
+        );
+        assert!(matches!(
+            client.create_post(&payload()),
+            Err(BufferWriteError::Permanent { code, message })
+                if code == "buffer_http_rejected"
+                    && message == "Buffer HTTP 401 (Access token is not valid)"
         ));
         http.respond(
             200,
